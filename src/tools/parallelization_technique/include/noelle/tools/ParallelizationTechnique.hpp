@@ -79,13 +79,13 @@ namespace llvm::noelle {
        */
       void initializeEnvironmentBuilder (
         LoopDependenceInfo *LDI,
-        std::set<int> nonReducableVars
+        std::set<uint32_t> nonReducableVars
       );
 
       void initializeEnvironmentBuilder (
         LoopDependenceInfo *LDI,
-        std::set<int> simpleVars,
-        std::set<int> reducableVars
+        std::set<uint32_t> simpleVars,
+        std::set<uint32_t> reducableVars
       );
 
       void allocateEnvironmentArray (
@@ -96,7 +96,7 @@ namespace llvm::noelle {
         LoopDependenceInfo *LDI
         );
 
-      virtual BasicBlock * propagateLiveOutEnvironment (
+      virtual BasicBlock * performReductionToAllReducableLiveOutVariables (
         LoopDependenceInfo *LDI, 
         Value *numberOfThreadsExecuted
         );
@@ -228,7 +228,7 @@ namespace llvm::noelle {
        */
       Noelle &noelle;
       Verbosity verbose;
-      EnvBuilder *envBuilder;
+      LoopEnvironmentBuilder *envBuilder;
 
       /*
        * Parallel task related information.

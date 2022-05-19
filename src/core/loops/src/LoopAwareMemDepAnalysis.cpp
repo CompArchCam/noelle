@@ -56,14 +56,13 @@ void refinePDGWithLoopAwareMemDepAnalysis(
   PDG *loopDG,
   Loop *l,
   LoopStructure *loopStructure,
-  LoopsSummary *liSummary,
+  StayConnectedNestedLoopForestNode *loops,
   LoopIterationDomainSpaceAnalysis *LIDS
 ) {
-
   refinePDGWithSCAF(loopDG, l);
 
   if (LIDS) {
-    refinePDGWithLIDS(loopDG, loopStructure, liSummary, LIDS);
+    refinePDGWithLIDS(loopDG, loopStructure, loops, LIDS);
   }
 
 }
@@ -71,13 +70,18 @@ void refinePDGWithLoopAwareMemDepAnalysis(
 void refinePDGWithSCAF (PDG *loopDG, Loop *l) {
   #ifdef ENABLE_SCAF
   assert(NoelleSCAFAA != nullptr);
-  // Iterate over all the edges of the loop PDG and
-  // collect memory deps to be queried.
-  // For each pair of instructions with a memory dependence map it to
-  // a small vector of found edges (0th element is for RAW, 1st for WAW, 2nd for WAR)
-  map<pair<Instruction *, Instruction *>, SmallVector<DGEdge<Value> *, 3>>
-      memDeps;
+
+  /*
+   * Iterate over all the edges of the loop PDG and collect memory deps to be queried.
+   * For each pair of instructions with a memory dependence map it to
+   * a small vector of found edges (0th element is for RAW, 1st for WAW, 2nd for WAR)
+   */
+  map<pair<Instruction *, Instruction *>, SmallVector<DGEdge<Value> *, 3>> memDeps;
   for (auto edge : make_range(loopDG->begin_edges(), loopDG->end_edges())) {
+
+    /*
+     * Skip dependences that are not between instructions of the target loop
+     */
     if (!loopDG->isInternal(edge->getIncomingT()) ||
         !loopDG->isInternal(edge->getOutgoingT())){
       continue;
@@ -90,6 +94,9 @@ void refinePDGWithSCAF (PDG *loopDG, Loop *l) {
       continue;
     }
 
+    /*
+     * Fetch the instructions involved in the dependence.
+     */
     auto pdgValueI = edge->getOutgoingT();
     auto i = dyn_cast<Instruction>(pdgValueI);
     assert(i && "Expecting an instruction as the value of a PDG node");
@@ -113,13 +120,22 @@ void refinePDGWithSCAF (PDG *loopDG, Loop *l) {
     }
   }
 
-  // For each memory depedence perform loop-aware dependence analysis to
-  // disprove it. Queries for loop-carried and intra-iteration deps.
+  /*
+   * For each memory depedence perform loop-aware dependence analysis to disprove it. 
+   * Queries for loop-carried and intra-iteration deps.
+   */
   for (auto memDep : memDeps) {
-    auto instPair = memDep.first;
-    Instruction *i = instPair.first;
-    Instruction *j = instPair.second;
 
+    /*
+     * Fetch the current pair of instructions
+     */
+    auto instPair = memDep.first;
+    auto i = instPair.first;
+    auto j = instPair.second;
+
+    /*
+     * Fetch the dependences.
+     */
     auto edges = memDep.second;
 
     // encode the found dependences in a bit vector.
@@ -137,8 +153,7 @@ void refinePDGWithSCAF (PDG *loopDG, Loop *l) {
     // check if there is a intra-iteration dependence
     uint8_t disprovedIIDepTypes = 0;
     if (disprovedLCDepTypes) {
-      disprovedIIDepTypes = disproveIntraIterationMemoryDep(
-          i, j, disprovedLCDepTypes, l, NoelleSCAFAA);
+      disprovedIIDepTypes = disproveIntraIterationMemoryDep(i, j, disprovedLCDepTypes, l, NoelleSCAFAA);
 
       // remove any edge that SCAF disproved both its loop-carried and
       // intra-iteration version
@@ -167,6 +182,7 @@ void refinePDGWithSCAF (PDG *loopDG, Loop *l) {
 
 // TODO: Refactor along with HELIX's exact same implementation of this method
 DataFlowResult * computeReachabilityFromInstructions (LoopStructure *loopStructure) {
+  assert(loopStructure != nullptr);
 
   auto loopHeader = loopStructure->getHeader();
   auto loopFunction = loopStructure->getFunction();
@@ -176,11 +192,15 @@ DataFlowResult * computeReachabilityFromInstructions (LoopStructure *loopStructu
    */
   auto dfa = DataFlowEngine{};
   auto computeGEN = [](Instruction *i, DataFlowResult *df) {
+    assert(i != nullptr);
+    assert(df != nullptr);
     auto& gen = df->GEN(i);
     gen.insert(i);
     return ;
   };
   auto computeOUT = [loopHeader](std::set<Value *>& OUT, Instruction *succ, DataFlowResult *df) {
+    assert(succ != nullptr);
+    assert(df != nullptr);
 
     /*
     * Check if the successor is the header.
@@ -200,6 +220,9 @@ DataFlowResult * computeReachabilityFromInstructions (LoopStructure *loopStructu
     return ;
   } ;
   auto computeIN = [](std::set<Value *>& IN, Instruction *inst, DataFlowResult *df) {
+    assert(inst != nullptr);
+    assert(df != nullptr);
+
     auto& genI = df->GEN(inst);
     auto& outI = df->OUT(inst);
     IN.insert(outI.begin(), outI.end());
@@ -213,7 +236,7 @@ DataFlowResult * computeReachabilityFromInstructions (LoopStructure *loopStructu
 void refinePDGWithLIDS(
   PDG *loopDG,
   LoopStructure *loopStructure,
-  LoopsSummary *liSummary,
+  StayConnectedNestedLoopForestNode *loops,
   LoopIterationDomainSpaceAnalysis *LIDS
 ) {
 
@@ -223,7 +246,7 @@ void refinePDGWithLIDS(
   auto dfr = computeReachabilityFromInstructions(loopStructure);
 
   std::unordered_set<DGEdge<Value> *> edgesToRemove;
-  for (auto dependency : LoopCarriedDependencies::getLoopCarriedDependenciesForLoop(*loopStructure, *liSummary, *loopDG)) {
+  for (auto dependency : LoopCarriedDependencies::getLoopCarriedDependenciesForLoop(*loopStructure, loops, *loopDG)) {
 
     /*
     * Do not waste time on edges that aren't memory dependencies

@@ -90,12 +90,6 @@ bool Inliner::runOnModule (Module &M) {
   };
   printFnInfo();
 
-  auto writeToContinueFile = []() -> void {
-    ofstream continuefile("dgsimplify_continue.txt");
-    continuefile << "1\n";
-    continuefile.close();
-  };
-
   /*
    * Fetch the profiles.
    */
@@ -119,7 +113,6 @@ bool Inliner::runOnModule (Module &M) {
   auto inlined = this->inlineCallsInvolvedInLoopCarriedDataDependences(noelle, pcg);
   if (inlined){
     errs() << "Inliner:   Inlined calls due to loop-carried data dependences\n";
-    writeToContinueFile();
 
     /*
      * Free the memory.
@@ -156,44 +149,35 @@ bool Inliner::runOnModule (Module &M) {
   /*
    * Inline functions containing targeted loops so the loop is in main
    */
-  ifstream doHoistFile("dgsimplify_do_hoist.txt");
-  auto doHoist = doHoistFile.good();
-  doHoistFile.close();
-  if (doHoist) {
-    std::string filename = "dgsimplify_loop_hoisting.txt";
-    getFunctionsToInline(filename);
+  std::string filename = "dgsimplify_loop_hoisting.txt";
+  getFunctionsToInline(filename);
 
-    auto inlined = this->inlineFnsOfLoopsToCGRoot(profiles);
-    if (inlined) {
-      errs() << "Inliner:   Inlined functions to hoist loops to the entry funtion of the program\n";
-      getAnalysis<CallGraphWrapperPass>().runOnModule(M);
-      parentFns.clear();
-      childrenFns.clear();
-      orderedCalled.clear();
-      orderedCalls.clear();
-      collectFnGraph(main);
-      collectInDepthOrderFns(main);
-      printFnOrder();
-    }
-
-    auto remaining = registerRemainingFunctions(filename);
-    if (remaining) {
-      writeToContinueFile();
-    }
-
-    printFnInfo();
-    if (!remaining && this->verbose != Verbosity::Disabled) {
-      errs() << "Inliner:   No remaining hoists\n";
-    }
-
-    /*
-     * Free the memory.
-     */
-    delete pcg;
-
-    errs() << "Inliner: Exit\n";
-    return inlined;
+  inlined = this->inlineFnsOfLoopsToCGRoot(profiles);
+  if (inlined) {
+    errs() << "Inliner:   Inlined functions to hoist loops to the entry funtion of the program\n";
+    getAnalysis<CallGraphWrapperPass>().runOnModule(M);
+    parentFns.clear();
+    childrenFns.clear();
+    orderedCalled.clear();
+    orderedCalls.clear();
+    collectFnGraph(main);
+    collectInDepthOrderFns(main);
+    printFnOrder();
   }
+
+  auto remaining = registerRemainingFunctions(filename);
+  printFnInfo();
+  if (!remaining && this->verbose != Verbosity::Disabled) {
+    errs() << "Inliner:   No remaining hoists\n";
+  }
+
+  /*
+   * Free the memory.
+   */
+  delete pcg;
+
+  errs() << "Inliner: Exit\n";
+  return inlined;
 
   /*
    * Free the memory.
@@ -725,16 +709,6 @@ void Inliner::createPreOrderedLoopSummariesFor (Function *F) {
     loopSummaries.insert(summary);
     orderedLoops.push_back(summary);
     summaryMap[loop] = summary;
-  }
-
-  // Associate loop summaries with parent and children loop summaries
-  for (auto pair : summaryMap) {
-    auto parentLoop = pair.first->getParentLoop();
-    auto parentLoopStructure = parentLoop ? summaryMap[parentLoop] : nullptr;
-    pair.second->setParentLoop(parentLoopStructure);
-    for (auto childLoop : pair.first->getSubLoops()) {
-      pair.second->addChild(summaryMap[childLoop]);
-    }
   }
 
   delete loops;

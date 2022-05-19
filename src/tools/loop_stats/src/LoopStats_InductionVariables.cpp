@@ -27,7 +27,7 @@ void LoopStats::collectStatsOnNoelleIVs (Hot *profiles, LoopDependenceInfo &LDI,
   auto GIV = ivManager->getLoopGoverningIVAttribution(*loopStructure);
   if (GIV != nullptr){
     statsForLoop->isGovernedByIV = 1;
-    statsForLoop->numberOfDynamicGovernedIVs = profiles->getTotalInstructions(GIV->getHeaderCmpInst());
+    statsForLoop->numberOfDynamicGovernedIVs = profiles->getTotalInstructions(GIV->getHeaderCompareInstructionToComputeExitCondition());
   }
 
   return ;
@@ -38,9 +38,12 @@ void LoopStats::collectStatsOnLLVMIVs (Hot *profiles, ScalarEvolution &SE, Loop 
    * Note: LLVM does not provide a way to collect all instructions used in computing IVs
    */
 
+  InductionDescriptor ID = InductionDescriptor();
   for (auto &phi : llvmLoop.getHeader()->phis()) {
     bool llvmLoopValidForInductionAnalysis = phi.getBasicBlockIndex(llvmLoop.getLoopPreheader()) >= 0;
     if (llvmLoopValidForInductionAnalysis && llvmLoop.isAuxiliaryInductionVariable(phi, SE)) {
+      statsForLoop->numberOfIVs++;
+    } else if (llvmLoopValidForInductionAnalysis && phi.getType()->isFloatingPointTy() && InductionDescriptor::isFPInductionPHI(&phi, &llvmLoop, &SE, ID)) {
       statsForLoop->numberOfIVs++;
     }
     statsForLoop->numberOfDynamicIVs = profiles->getTotalInstructions(&phi);

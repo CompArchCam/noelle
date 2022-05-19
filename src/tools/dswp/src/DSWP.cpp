@@ -231,19 +231,25 @@ bool DSWP::apply (
   // writeStageQueuesAsDot(*LDI);
 
   /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
+
+  /*
    * Collect information on stages' environments
    */
-  auto liveInVars = LDI->environment->getEnvIndicesOfLiveInVars();
-  auto liveOutVars = LDI->environment->getEnvIndicesOfLiveOutVars();
-  std::set<int> nonReducableVars(liveInVars.begin(), liveInVars.end());
+  auto liveInVars = environment->getEnvIndicesOfLiveInVars();
+  auto liveOutVars = environment->getEnvIndicesOfLiveOutVars();
+  std::set<uint32_t> nonReducableVars(liveInVars.begin(), liveInVars.end());
   nonReducableVars.insert(liveOutVars.begin(), liveOutVars.end());
-  std::set<int> reducableVars;
+  std::set<uint32_t> reducableVars;
 
   /*
    * Should an exit block environment variable be necessary, register one 
    */
   if (loopSummary->numberOfExitBasicBlocks() > 1){ 
-    nonReducableVars.insert(LDI->environment->indexOfExitBlockTaken());
+    nonReducableVars.insert(environment->indexOfExitBlockTaken());
   }
 
   initializeEnvironmentBuilder(LDI, nonReducableVars, reducableVars);
@@ -315,7 +321,8 @@ bool DSWP::apply (
      * HACK: For now, this must follow loading live-ins as this re-wiring overrides
      * the live-in mapping to use locally cloned memory instructions that are live-in to the loop
      */
-    if (LDI->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)) {
+    auto ltm = LDI->getLoopTransformationsManager();
+    if (ltm->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)) {
       this->cloneMemoryLocationsLocallyAndRewireLoop(LDI, i);
     }
 

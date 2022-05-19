@@ -129,7 +129,7 @@ void HELIX::rewireLoopForIVsToIterateNthIterations (LoopDependenceInfo *LDI) {
    * The exit condition needs to be made non-strict to catch iterating past it
    */
   LoopGoverningIVUtility ivUtility(loopStructure, *ivManager, *loopGoverningIVAttr);
-  auto originalCmpInst = loopGoverningIVAttr->getHeaderCmpInst();
+  auto originalCmpInst = loopGoverningIVAttr->getHeaderCompareInstructionToComputeExitCondition();
   auto originalBrInst = loopGoverningIVAttr->getHeaderBrInst();
   auto cmpInst = cast<CmpInst>(task->getCloneOfOriginalInstruction(originalCmpInst));
   auto brInst = cast<BranchInst>(task->getCloneOfOriginalInstruction(originalBrInst));
@@ -143,8 +143,11 @@ void HELIX::rewireLoopForIVsToIterateNthIterations (LoopDependenceInfo *LDI) {
    */
   auto &loopGoverningIV = loopGoverningIVAttr->getInductionVariable();
   auto originalGoverningPHI = loopGoverningIV.getLoopEntryPHI();
+  assert(originalGoverningPHI != nullptr);
   auto cloneGoverningPHI = task->getCloneOfOriginalInstruction(originalGoverningPHI);
+  assert(cloneGoverningPHI != nullptr);
   auto origValueUsedToCompareAgainstExitConditionValue = loopGoverningIVAttr->getValueToCompareAgainstExitConditionValue();
+  assert(origValueUsedToCompareAgainstExitConditionValue != nullptr);
   auto valueUsedToCompareAgainstExitConditionValue = task->getCloneOfOriginalInstruction(origValueUsedToCompareAgainstExitConditionValue);
   assert(valueUsedToCompareAgainstExitConditionValue != nullptr);
   auto updatedBrInst = brInst;
@@ -358,14 +361,14 @@ void HELIX::rewireLoopForIVsToIterateNthIterations (LoopDependenceInfo *LDI) {
     /*
      * Only work with duplicated producers
      */
-    auto originalProducer = (Instruction*)LDI->environment->producerAt(envIndex);
+    auto originalProducer = (Instruction*)LDI->getEnvironment()->producerAt(envIndex);
     if (this->lastIterationExecutionDuplicateMap.find(originalProducer) == this->lastIterationExecutionDuplicateMap.end()) continue;
 
     /*
      * If the producer isn't reducible, simply mapping to the duplicated value is sufficient,
      * which is already done (stored in lastIterationExecutionDuplicateMap)
      */
-    auto isReduced = this->envBuilder->isReduced(envIndex);
+    auto isReduced = this->envBuilder->isVariableReducable(envIndex);
     if (!isReduced) {
       continue;
     }

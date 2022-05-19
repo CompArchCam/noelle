@@ -30,14 +30,15 @@ You are kindly asked to acknowledge usage of the tool by citing the following pa
 ```
 
 The only documentation available for NOELLE is:
+- a [video](https://www.youtube.com/watch?v=whORNUUWIjI&t=7s) introducing NOELLE
 - the [paper](http://www.cs.northwestern.edu/~simonec/files/Research/papers/HELIX_CGO_2022.pdf)
 - the comments within the code
 - the slides we use in the class [Advanced Topics in Compilers](http://www.cs.northwestern.edu/~simonec/ATC.html)
-  (Projects students do in this class are built upon NOELLE)
+  (Projects that students do in this class are built upon NOELLE)
 
 
 ## Version
-The latest stable version is 9.6.0 (tag = `v9.6.0`).
+The latest stable version is 9.7.0 (tag = `v9.7.0`).
 
 ### Version Numbering Scheme
 The version number is in the form of \[v _Major.Minor.Revision_ \]

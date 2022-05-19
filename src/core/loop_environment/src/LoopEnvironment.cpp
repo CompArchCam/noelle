@@ -10,12 +10,20 @@
  */
 #include "noelle/core/LoopEnvironment.hpp"
 
-using namespace llvm;
-using namespace llvm::noelle;
+namespace llvm::noelle { 
 
 LoopEnvironment::LoopEnvironment (
   PDG *loopDG, 
   std::vector<BasicBlock *> &exitBlocks
+  ) : LoopEnvironment(loopDG, exitBlocks, {})
+{
+  return ;
+}
+
+LoopEnvironment::LoopEnvironment (
+  PDG *loopDG, 
+  std::vector<BasicBlock *> &exitBlocks,
+  const std::set<Value *> &excludeValues
   ) {
 
   /*
@@ -28,6 +36,13 @@ LoopEnvironment::LoopEnvironment (
      */
     auto externalNode = nodeI.second;
     auto externalValue = externalNode->getT();
+
+    /*
+     * Skip values that need to be excluded
+     */
+    if (excludeValues.find(externalValue) != excludeValues.end()){
+      continue ;
+    }
 
     /*
      * Determine whether the external value is a producer (i.e., live-in).
@@ -215,4 +230,6 @@ iterator_range<std::set<int>::iterator> LoopEnvironment::getEnvIndicesOfLiveOutV
 Value * LoopEnvironment::producerAt (uint64_t ind) const { 
   assert(ind < this->envProducers.size());
   return envProducers[ind];
+}
+
 }

@@ -12,6 +12,7 @@ set(Srcs
   SCCDAGNormalizer.cpp
   LoopDependenceInfo.cpp
   SCCDAGPartition.cpp
+  LoopTransformationsOptions.cpp
 )
 
 # Compilation flags
@@ -42,6 +43,8 @@ include_directories(${LLVM_INCLUDE_DIRS}
   ../../pdg/include 
   ../../hotprofiler/include 
   ../../loop_structure/include 
+  ../../loop_environment/include 
+  ../../forest/include
   ../../talkdown/include
   ../../invariants/include
   ../../induction_variables/include

@@ -20,15 +20,40 @@ namespace llvm::noelle {
 
   class StayConnectedNestedLoopForestNode {
     public:
-      StayConnectedNestedLoopForestNode (StayConnectedNestedLoopForest *f, LoopStructure *l);
+      StayConnectedNestedLoopForestNode (
+        StayConnectedNestedLoopForest *f, 
+        LoopStructure *l
+        );
 
-      StayConnectedNestedLoopForestNode (StayConnectedNestedLoopForest *f, LoopStructure *l, StayConnectedNestedLoopForestNode *parent);
+      StayConnectedNestedLoopForestNode (
+        StayConnectedNestedLoopForest *f, 
+        LoopStructure *l, 
+        StayConnectedNestedLoopForestNode *parent
+        );
 
       LoopStructure * getLoop (void) const ;
 
+      LoopStructure * getInnermostLoopThatContains (Instruction *i) ;
+
+      LoopStructure * getInnermostLoopThatContains (BasicBlock *bb);
+
+      std::set<StayConnectedNestedLoopForestNode *> getNodes (void) ;
+
+      std::set<LoopStructure *> getLoops (void) ;
+
       StayConnectedNestedLoopForestNode * getParent (void) const ;
 
-      std::unordered_set<StayConnectedNestedLoopForestNode *> getDescendants (void) const ;
+      std::unordered_set<StayConnectedNestedLoopForestNode *> getChildren (void) const ;
+
+      std::unordered_set<StayConnectedNestedLoopForestNode *> getDescendants (void) ;
+
+      bool isIncludedInItsSubLoops (Instruction *inst) const ;
+
+      /*
+       * This function returns the total number of sub-loops contained by @this.
+       * This includes the sub-loops of sub-loops.
+       */
+      uint32_t getNumberOfSubLoops (void) const ;
 
       bool visitPreOrder (
         std::function<bool (StayConnectedNestedLoopForestNode *n, uint32_t treeLevel)> funcToInvoke
@@ -45,7 +70,7 @@ namespace llvm::noelle {
       StayConnectedNestedLoopForest *forest;
       LoopStructure *loop;
       StayConnectedNestedLoopForestNode *parent;
-      std::unordered_set<StayConnectedNestedLoopForestNode *> descendants;
+      std::unordered_set<StayConnectedNestedLoopForestNode *> children;
 
       bool visitPreOrder (std::function<bool (StayConnectedNestedLoopForestNode *n, uint32_t treeLevel)> funcToInvoke, uint32_t treeLevel) ;
       bool visitPostOrder (std::function<bool (StayConnectedNestedLoopForestNode *n, uint32_t treeLevel)> funcToInvoke, uint32_t treeLevel) ;
@@ -67,6 +92,8 @@ namespace llvm::noelle {
       StayConnectedNestedLoopForestNode * getNode (LoopStructure *loop) const ;
 
       StayConnectedNestedLoopForestNode * getInnermostLoopThatContains (Instruction *i) const ;
+
+      StayConnectedNestedLoopForestNode * getInnermostLoopThatContains (BasicBlock *bb) const ;
 
       ~StayConnectedNestedLoopForest();
 

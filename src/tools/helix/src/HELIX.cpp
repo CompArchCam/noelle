@@ -18,7 +18,7 @@ HELIX::HELIX (
   bool forceParallelization
   )
   : ParallelizationTechniqueForLoopsWithLoopCarriedDataDependences{n, forceParallelization},
-    loopCarriedEnvBuilder{nullptr}, 
+    loopCarriedLoopEnvironmentBuilder{nullptr}, 
     taskFunctionDG{nullptr},
     lastIterationExecutionBlock{nullptr},
     enableInliner{true}
@@ -235,20 +235,27 @@ void HELIX::createParallelizableTask (
   auto program = this->noelle.getProgram();
   auto helixTask = new HELIXTask(this->taskSignature, *program);
   this->addPredecessorAndSuccessorsBasicBlocksToTasks(LDI, { helixTask });
-  this->numTaskInstances = LDI->getMaximumNumberOfCores();
+  auto ltm = LDI->getLoopTransformationsManager();
+  this->numTaskInstances = ltm->getMaximumNumberOfCores();
   assert(helixTask == this->tasks[0]);
+
+  /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
 
   /*
    * Fetch the indices of live-in and live-out variables of the loop being parallelized.
    */
-  auto liveInVars = LDI->environment->getEnvIndicesOfLiveInVars();
-  auto liveOutVars = LDI->environment->getEnvIndicesOfLiveOutVars();
+  auto liveInVars = environment->getEnvIndicesOfLiveInVars();
+  auto liveOutVars = environment->getEnvIndicesOfLiveOutVars();
 
   /*
    * Add all live-in and live-out variables as variables to be included in the environment.
    */
-  std::set<int> nonReducableVars(liveInVars.begin(), liveInVars.end());
-  std::set<int> reducableVars{};
+  std::set<uint32_t> nonReducableVars(liveInVars.begin(), liveInVars.end());
+  std::set<uint32_t> reducableVars{};
   for (auto liveOutIndex : liveOutVars) {
 
     /*
@@ -256,7 +263,7 @@ void HELIX::createParallelizableTask (
      *
      * Check if it can be reduced so we can generate more efficient code that does not require a sequential segment.
      */
-    auto producer = LDI->environment->producerAt(liveOutIndex);
+    auto producer = environment->producerAt(liveOutIndex);
     auto scc = sccManager->getSCCDAG()->sccOfValue(producer);
     auto sccInfo = sccManager->getSCCAttrs(scc);
     if (sccInfo->canExecuteReducibly()){
@@ -276,7 +283,7 @@ void HELIX::createParallelizableTask (
    * This location exists only if there is more than one loop exit.
    */
   if (loopStructure->numberOfExitBasicBlocks() > 1){ 
-    nonReducableVars.insert(LDI->environment->indexOfExitBlockTaken());
+    nonReducableVars.insert(environment->indexOfExitBlockTaken());
   }
 
   /*
@@ -297,10 +304,10 @@ void HELIX::createParallelizableTask (
    * Store final results to loop live-out variables.
    */
   auto envUser = this->envBuilder->getUser(0);
-  for (auto envIndex : LDI->environment->getEnvIndicesOfLiveInVars()) {
+  for (auto envIndex : environment->getEnvIndicesOfLiveInVars()) {
     envUser->addLiveInIndex(envIndex);
   }
-  for (auto envIndex : LDI->environment->getEnvIndicesOfLiveOutVars()) {
+  for (auto envIndex : environment->getEnvIndicesOfLiveOutVars()) {
     envUser->addLiveOutIndex(envIndex);
   }
   this->generateCodeToLoadLiveInVariables(LDI, 0);
@@ -309,7 +316,7 @@ void HELIX::createParallelizableTask (
    * HACK: For now, this must follow loading live-ins as this re-wiring overrides
    * the live-in mapping to use locally cloned memory instructions that are live-in to the loop
    */
-  if (LDI->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)) {
+  if (ltm->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)) {
     this->cloneMemoryLocationsLocallyAndRewireLoop(LDI, 0);
   }
 

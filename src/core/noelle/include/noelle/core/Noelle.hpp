@@ -122,6 +122,8 @@ namespace llvm::noelle {
         std::vector<LoopDependenceInfo *> & loops
         ) ;
 
+      StayConnectedNestedLoopForest * getProgramLoopsNestingForest (void);
+
       StayConnectedNestedLoopForest * organizeLoopsInTheirNestingForest (
         std::vector<LoopStructure *> const & loops
         ) ;
@@ -217,6 +219,17 @@ namespace llvm::noelle {
       bool checkToGetLoopFilteringInfo (void) ;
 
       LoopDependenceInfo * getLoopDependenceInfoForLoop (
+        BasicBlock *header,
+        PDG *functionPDG,
+        DominatorSummary *DS,
+        uint32_t techniquesToDisable,
+        uint32_t DOALLChunkSize,
+        uint32_t maxCores,
+        std::unordered_set<LoopDependenceInfoOptimization> optimizations
+      );
+
+      LoopDependenceInfo * getLoopDependenceInfoForLoop (
+        StayConnectedNestedLoopForestNode *loopNode,
         Loop *loop,
         PDG *functionPDG,
         DominatorSummary *DS,

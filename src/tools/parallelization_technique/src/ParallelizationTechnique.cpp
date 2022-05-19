@@ -23,13 +23,13 @@ ParallelizationTechnique::ParallelizationTechnique (
 }
 
 Value * ParallelizationTechnique::getEnvArray (void) const { 
-  return envBuilder->getEnvArray(); 
+  return envBuilder->getEnvironmentArray(); 
 }
 
 void ParallelizationTechnique::initializeEnvironmentBuilder (
   LoopDependenceInfo *LDI,
-  std::set<int> simpleVars,
-  std::set<int> reducableVars
+  std::set<uint32_t> simpleVars,
+  std::set<uint32_t> reducableVars
 ) {
 
   /*
@@ -47,25 +47,45 @@ void ParallelizationTechnique::initializeEnvironmentBuilder (
   }
 
   /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
+
+  /*
    * Collect the Type of each environment variable
    */
   std::vector<Type *> varTypes;
-  for (int64_t i = 0; i < LDI->environment->size(); ++i) {
-    varTypes.push_back(LDI->environment->typeOfEnvironmentLocation(i));
+  for (int64_t i = 0; i < environment->size(); ++i) {
+    varTypes.push_back(environment->typeOfEnvironmentLocation(i));
   }
 
-  this->envBuilder = new EnvBuilder(program->getContext());
-  this->envBuilder->createEnvVariables(varTypes, simpleVars, reducableVars, this->numTaskInstances);
+  /*
+   * Create the environment builder
+   */
+  this->envBuilder = new LoopEnvironmentBuilder(program->getContext(), varTypes, simpleVars, reducableVars, this->numTaskInstances, tasks.size());
 
-  this->envBuilder->createEnvUsers(tasks.size());
+  /*
+   * Create the users of the environment: one user per task.
+   */
   for (auto i = 0; i < this->tasks.size(); ++i) {
-    auto task = tasks[i];
+
+    /*
+     * Fetch the current task and the related environment-user.
+     */
+    auto task = this->tasks[i];
+    assert(task != nullptr);
     auto envUser = envBuilder->getUser(i);
+    assert(envUser != nullptr);
+
+    /*
+     * Generate code within the current task to cast the generic pointer to the type of the environment it points to.
+     */
     auto entryBlock = task->getEntry();
     IRBuilder<> entryBuilder(entryBlock);
     envUser->setEnvArray(entryBuilder.CreateBitCast(
       task->getEnvironment(),
-      PointerType::getUnqual(envBuilder->getEnvArrayTy())
+      PointerType::getUnqual(envBuilder->getEnvironmentArrayType())
     ));
   }
 
@@ -74,9 +94,9 @@ void ParallelizationTechnique::initializeEnvironmentBuilder (
 
 void ParallelizationTechnique::initializeEnvironmentBuilder (
   LoopDependenceInfo *LDI,
-  std::set<int> nonReducableVars
+  std::set<uint32_t> nonReducableVars
   ){
-  std::set<int> emptySet{};
+  std::set<uint32_t> emptySet{};
 
   this->initializeEnvironmentBuilder(LDI, nonReducableVars, emptySet);
 
@@ -112,7 +132,7 @@ void ParallelizationTechnique::populateLiveInEnvironment (LoopDependenceInfo *LD
   /*
    * Fetch the loop environment.
    */
-  auto env = LDI->environment;
+  auto env = LDI->getEnvironment();
 
   /*
    * Store live-in values into the environment just before jumping to the parallelized loop.
@@ -128,7 +148,7 @@ void ParallelizationTechnique::populateLiveInEnvironment (LoopDependenceInfo *LD
     /*
      * Fetch the memory location inside the environment dedicated to the live-in value.
      */
-    auto environmentVariable = this->envBuilder->getEnvVar(envIndex);
+    auto environmentVariable = this->envBuilder->getEnvironmentVariable(envIndex);
 
     /*
      * Store the value inside the environment.
@@ -139,7 +159,7 @@ void ParallelizationTechnique::populateLiveInEnvironment (LoopDependenceInfo *LD
   return ;
 }
 
-BasicBlock * ParallelizationTechnique::propagateLiveOutEnvironment (LoopDependenceInfo *LDI, Value *numberOfThreadsExecuted) {
+BasicBlock * ParallelizationTechnique::performReductionToAllReducableLiveOutVariables (LoopDependenceInfo *LDI, Value *numberOfThreadsExecuted) {
   auto builder = new IRBuilder<>(this->entryPointOfParallelizedLoop);
 
   /*
@@ -154,15 +174,21 @@ BasicBlock * ParallelizationTechnique::propagateLiveOutEnvironment (LoopDependen
   auto sccManager = LDI->getSCCManager();
 
   /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
+
+  /*
    * Collect reduction operation information needed to accumulate reducable variables after parallelization execution
    */
   std::unordered_map<int, int> reducableBinaryOps;
   std::unordered_map<int, Value *> initialValues;
-  for (auto envInd : LDI->environment->getEnvIndicesOfLiveOutVars()) {
-    auto isReduced = envBuilder->isReduced(envInd);
+  for (auto envInd : environment->getEnvIndicesOfLiveOutVars()) {
+    auto isReduced = envBuilder->isVariableReducable(envInd);
     if (!isReduced) continue;
 
-    auto producer = LDI->environment->producerAt(envInd);
+    auto producer = environment->producerAt(envInd);
     auto producerSCC = sccManager->getSCCDAG()->sccOfValue(producer);
     auto producerSCCAttributes = sccManager->getSCCAttrs(producerSCC);
 
@@ -202,22 +228,22 @@ BasicBlock * ParallelizationTechnique::propagateLiveOutEnvironment (LoopDependen
     afterReductionBuilder = new IRBuilder<>(afterReductionB);
   }
 
-  for (int envInd : LDI->environment->getEnvIndicesOfLiveOutVars()) {
-    auto prod = LDI->environment->producerAt(envInd);
+  for (int envInd : environment->getEnvIndicesOfLiveOutVars()) {
+    auto prod = environment->producerAt(envInd);
 
     /*
-     * NOTE(angelo): If the environment variable isn't reduced, it is held in allocated
-     * memory that needs to be loaded from in order to retrieve the value
+     * If the environment variable isn't reduced, it is held in allocated memory that needs to be loaded from in order to retrieve the value.
      */
-    auto isReduced = envBuilder->isReduced(envInd);
+    auto isReduced = envBuilder->isVariableReducable(envInd);
     Value *envVar;
     if (isReduced) {
-      envVar = envBuilder->getAccumulatedReducableEnvVar(envInd);
+      envVar = envBuilder->getAccumulatedReducableEnvironmentVariable(envInd);
     } else {
-      envVar = afterReductionBuilder->CreateLoad(envBuilder->getEnvVar(envInd));
+      envVar = afterReductionBuilder->CreateLoad(envBuilder->getEnvironmentVariable(envInd));
     }
+    assert(envVar != nullptr);
 
-    for (auto consumer : LDI->environment->consumersOf(prod)) {
+    for (auto consumer : environment->consumersOf(prod)) {
       if (auto depPHI = dyn_cast<PHINode>(consumer)) {
         depPHI->addIncoming(envVar, this->exitPointOfParallelizedLoop);
         continue;
@@ -307,6 +333,9 @@ void ParallelizationTechnique::cloneSequentialLoop (
   LoopDependenceInfo *LDI,
   int taskIndex
 ){
+  assert(LDI != nullptr);
+  assert(taskIndex < this->tasks.size());
+
 
   /*
    * Fetch the program.
@@ -317,7 +346,7 @@ void ParallelizationTechnique::cloneSequentialLoop (
    * Fetch the task.
    */
   auto &cxt = program->getContext();
-  auto task = tasks[taskIndex];
+  auto task = this->tasks[taskIndex];
 
   /*
    * Code to filter out instructions we don't want to clone.
@@ -336,7 +365,7 @@ void ParallelizationTechnique::cloneSequentialLoop (
    * Clone all basic blocks of the original loop
    */
   auto topLoop = LDI->getLoopStructure();
-  for (auto originBB : topLoop->orderedBBs) {
+  for (auto originBB : topLoop->getBasicBlocks()) {
 
     /*
      * Clone the basic block.
@@ -403,6 +432,12 @@ void ParallelizationTechnique::cloneMemoryLocationsLocallyAndRewireLoop (
 
   task->getTaskBody()->print(errs());
   rootLoop->getFunction()->print(errs());
+
+  /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
 
   /*
    * Check every stack object that can be safely cloned.
@@ -547,7 +582,7 @@ void ParallelizationTechnique::cloneMemoryLocationsLocallyAndRewireLoop (
            */
           auto newLiveIn = true;
           for (auto envIndex : envUser->getEnvIndicesOfLiveInVars()) {
-            auto producer = LDI->environment->producerAt(envIndex);
+            auto producer = environment->producerAt(envIndex);
             if (producer == opJ){
               newLiveIn = false;
               break;
@@ -562,7 +597,7 @@ void ParallelizationTechnique::cloneMemoryLocationsLocallyAndRewireLoop (
            *
            * Make space in the environment for the new live-in.
            */
-          auto newLiveInEnvironmentIndex = LDI->environment->addLiveInValue(opJ, {opI});
+          auto newLiveInEnvironmentIndex = environment->addLiveInValue(opJ, {opI});
           this->envBuilder->addVariableToEnvironment(newLiveInEnvironmentIndex, opJ->getType());
 
           /*
@@ -627,7 +662,7 @@ void ParallelizationTechnique::generateCodeToLoadLiveInVariables (
     /*
      * Fetch the current producer of the original code that generates the live-in value.
      */
-    auto producer = LDI->environment->producerAt(envIndex);
+    auto producer = LDI->getEnvironment()->producerAt(envIndex);
 
     /*
      * Create GEP access of the environment variable at the given index
@@ -686,18 +721,20 @@ void ParallelizationTechnique::generateCodeToStoreLiveOutVariables (
      * assume the direct cloning of the producer is the only clone
      * TODO: Find a better place to map this single clone (perhaps when the original loop's values are cloned)
      */
-    auto producer = (Instruction*)LDI->environment->producerAt(envIndex);
+    auto producer = (Instruction*)LDI->getEnvironment()->producerAt(envIndex);
+    assert(producer != nullptr);
     if (!task->doesOriginalLiveOutHaveManyClones(producer)) {
       auto singleProducerClone = task->getCloneOfOriginalInstruction(producer);
       task->addLiveOut(producer, singleProducerClone);
     }
+
     auto producerClones = task->getClonesOfOriginalLiveOut(producer);
 
     /*
      * Create GEP access of the single, or reducable, environment variable
      */
     auto envType = producer->getType();
-    auto isReduced = this->envBuilder->isReduced(envIndex);
+    auto isReduced = this->envBuilder->isVariableReducable(envIndex);
     if (isReduced) {
       envUser->createReducableEnvPtr(entryBuilder, envIndex, envType, numTaskInstances, task->getTaskInstanceID());
     } else {
@@ -714,7 +751,7 @@ void ParallelizationTechnique::generateCodeToStoreLiveOutVariables (
        * Fetch the operator of the accumulator instruction for this reducable variable
        * Store the identity value of the operator
        */
-      auto identityV = getIdentityValueForEnvironmentValue(LDI, envIndex, envType);
+      auto identityV = this->getIdentityValueForEnvironmentValue(LDI, envIndex, envType);
       entryBuilder.CreateStore(identityV, envPtr);
     }
 
@@ -822,7 +859,7 @@ Instruction * ParallelizationTechnique::fetchOrCreatePHIForIntermediateProducerV
   /*
    * Fetch all clones of intermediate values of the producer
    */
-  auto producer = (Instruction*)LDI->environment->producerAt(envIndex);
+  auto producer = (Instruction*)LDI->getEnvironment()->producerAt(envIndex);
   auto producerSCC = sccManager->getSCCDAG()->sccOfValue(producer);
 
   std::set<Instruction *> intermediateValues{};
@@ -1031,24 +1068,38 @@ void ParallelizationTechnique::setReducableVariablesToBeginAtIdentityValue (
 ){
 
   /*
+   * Fetch the task.
+   */
+  assert(taskIndex < this->tasks.size());
+  auto task = this->tasks[taskIndex];
+  assert(task != nullptr);
+
+  /*
    * Fetch task information.
    */
-  auto task = this->tasks[taskIndex];
-  auto loopSummary = LDI->getLoopStructure();
-  auto loopHeader = loopSummary->getHeader();
+  auto loopStructure = LDI->getLoopStructure();
+  auto loopHeader = loopStructure->getHeader();
   auto headerClone = task->getCloneOfOriginalBasicBlock(loopHeader);
-  auto loopPreHeader = loopSummary->getPreHeader();
+  assert(headerClone != nullptr);
+  auto loopPreHeader = loopStructure->getPreHeader();
   auto preheaderClone = task->getCloneOfOriginalBasicBlock(loopPreHeader);
+  assert(preheaderClone != nullptr);
+
+  /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
 
   /*
    * Iterate over live-out variables.
    */
-  for (auto envInd : LDI->environment->getEnvIndicesOfLiveOutVars()) {
+  for (auto envInd : environment->getEnvIndicesOfLiveOutVars()) {
 
     /*
      * Check if the current live-out variable can be reduced.
      */
-    auto isThisLiveOutVarReducable = this->envBuilder->isReduced(envInd);
+    auto isThisLiveOutVarReducable = this->envBuilder->isVariableReducable(envInd);
     if (!isThisLiveOutVarReducable) {
       continue;
     }
@@ -1059,13 +1110,16 @@ void ParallelizationTechnique::setReducableVariablesToBeginAtIdentityValue (
      * PHI node in the header. The incoming value from the preheader is the
      * location of the initial value that needs to be changed
      */
-    auto producer = LDI->environment->producerAt(envInd);
+    auto producer = environment->producerAt(envInd);
+    assert(producer != nullptr);
     auto loopEntryProducerPHI = this->fetchLoopEntryPHIOfProducer(LDI, producer);
+    assert(loopEntryProducerPHI != nullptr);
 
     /*
      * Fetch the related instruction of the producer that has been created (cloned) and stored in the parallelized version of the loop.
      */
     auto producerClone = cast<PHINode>(task->getCloneOfOriginalInstruction(loopEntryProducerPHI));
+    assert(producerClone != nullptr);
 
     /*
      * Fetch the cloned pre-header index
@@ -1123,9 +1177,15 @@ Value * ParallelizationTechnique::getIdentityValueForEnvironmentValue (
   auto sccManager = LDI->getSCCManager();
 
   /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
+
+  /*
    * Fetch the producer of new values of the current environment variable.
    */
-  auto producer = LDI->environment->producerAt(environmentIndex);
+  auto producer = environment->producerAt(environmentIndex);
 
   /*
    * Fetch the SCC that this producer belongs to.
@@ -1175,17 +1235,23 @@ void ParallelizationTechnique::generateCodeToStoreExitBlockIndex (
   }
 
   /*
+   * Fetch the environment of the loop
+   */
+  auto environment = LDI->getEnvironment();
+  assert(environment != nullptr);
+
+  /*
    * There are multiple exit blocks.
    *
    * Fetch the pointer of the location where the exit block ID taken will be stored.
    */
-  auto exitBlockEnvIndex = LDI->environment->indexOfExitBlockTaken();
+  auto exitBlockEnvIndex = environment->indexOfExitBlockTaken();
   assert(exitBlockEnvIndex != -1);
   auto envUser = this->envBuilder->getUser(taskIndex);
   auto entryTerminator = task->getEntry()->getTerminator();
   IRBuilder<> entryBuilder(entryTerminator);
 
-  auto envType = LDI->environment->typeOfEnvironmentLocation(exitBlockEnvIndex);
+  auto envType = environment->typeOfEnvironmentLocation(exitBlockEnvIndex);
   envUser->createEnvPtr(entryBuilder, exitBlockEnvIndex, envType);
 
   /*
@@ -1399,7 +1465,8 @@ void ParallelizationTechnique::dumpToFile (LoopDependenceInfo &LDI) {
    */
   auto sccManager = LDI.getSCCManager();
 
-  std::set<BasicBlock *> bbs(loopSummary->orderedBBs.begin(), loopSummary->orderedBBs.end());
+  auto allBBs = loopSummary->getBasicBlocks();
+  std::set<BasicBlock *> bbs(allBBs.begin(), allBBs.end());
   DGPrinter::writeGraph<SubCFGs, BasicBlock>("technique-original-loop-" + std::to_string(LDI.getID()) + ".dot", new SubCFGs(bbs));
   DGPrinter::writeGraph<SCCDAG, SCC>("technique-sccdag-loop-" + std::to_string(LDI.getID()) + ".dot", sccManager->getSCCDAG());
 

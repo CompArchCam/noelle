@@ -2,8 +2,7 @@
 Universe = vanilla
 
 # Describe the target machine
-#Requirements = (Machine != "fix.cs.northwestern.edu") && (Machine != "allagash.cs.northwestern.edu") && (Machine != "piraat.cs.northwestern.edu") 
-Requirements = 
+Requirements = ((Machine != "fix.cs.northwestern.edu") && (Machine != "allagash.cs.northwestern.edu") && (Machine != "piraat.cs.northwestern.edu"))
 
 Rank = TARGET.Mips
 Copy_To_Spool = False
@@ -47,6 +46,7 @@ ParallelizationOptions =
 NoelleOptions = 
 FrontEndOptions =
 PreMiddleEndOptions =
-Arguments = "$(InitialDir) $(InitialDir)/$(TestsPath)/$(Test) '$(NoelleOptions)' '$(ParallelizationOptions)' '$(FrontEndOptions)' '$(PreMiddleEndOptions)' $(InitialDir)/$(TestsPath)/errors.txt"
+ToolOptions = 
+Arguments = "$(InitialDir) $(InitialDir)/$(TestsPath)/$(Test) '$(NoelleOptions)' '$(ParallelizationOptions)' '$(FrontEndOptions)' '$(PreMiddleEndOptions)' '$(ToolOptions)' $(InitialDir)/$(TestsPath)/errors.txt"
 
 # List the tests

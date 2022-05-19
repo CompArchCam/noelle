@@ -35,6 +35,7 @@
 #include "noelle/core/SCC.hpp"
 #include "noelle/core/SCCDAG.hpp"
 #include "noelle/core/Noelle.hpp"
+#include "noelle/core/MetadataManager.hpp"
 #include "HeuristicsPass.hpp"
 #include "DSWP.hpp"
 #include "DOALL.hpp"
@@ -42,7 +43,7 @@
 
 namespace llvm::noelle {
 
-  struct Parallelizer : public ModulePass {
+  class Parallelizer : public ModulePass {
     public:
 
       Parallelizer ();
@@ -78,18 +79,6 @@ namespace llvm::noelle {
       std::vector<LoopDependenceInfo *> getLoopsToParallelize (Module &M, Noelle &par) ;
 
       bool collectThreadPoolHelperFunctionsAndTypes (Module &M, Noelle &par) ;
-
-      void removeLoopsNotWorthParallelizing (
-        Noelle &noelle, 
-        Hot *profiles,
-        StayConnectedNestedLoopForest *f
-        );
-
-      std::vector<LoopDependenceInfo *> selectTheOrderOfLoopsToParallelize (
-        Noelle &noelle, 
-        Hot *profiles,
-        noelle::StayConnectedNestedLoopForestNode *tree
-        ) ;
 
       /*
        * Debug utilities

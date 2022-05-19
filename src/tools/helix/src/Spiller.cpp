@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 - 2021  Angelo Matni, Simone Campanoni
+ * Copyright 2016 - 2022  Angelo Matni, Simone Campanoni
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -19,6 +19,7 @@ void HELIX::spillLoopCarriedDataDependencies (LoopDependenceInfo *LDI, DataFlowR
    * Fetch the task
    */
   auto helixTask = static_cast<HELIXTask *>(this->tasks[0]);
+  assert(helixTask != nullptr);
 
   /*
    * Fetch the header.
@@ -29,11 +30,12 @@ void HELIX::spillLoopCarriedDataDependencies (LoopDependenceInfo *LDI, DataFlowR
   auto clonedPreheader = helixTask->getCloneOfOriginalBasicBlock(loopPreHeader);
 
   /*
-   * Fetch the loop function.
+   * Fetch the loop information.
    */
   auto loopFunction = loopSummary->getFunction();
   auto sccManager = LDI->getSCCManager();
   auto sccdag = sccManager->getSCCDAG();
+  auto loopIVManager = LDI->getInductionVariableManager();
 
   /*
    * Collect all PHIs in the loop header; they are local variables
@@ -47,16 +49,20 @@ void HELIX::spillLoopCarriedDataDependencies (LoopDependenceInfo *LDI, DataFlowR
     auto phiSCC = sccdag->sccOfValue(cast<Value>(&phi));
     assert(phiSCC != nullptr);
     auto sccInfo = sccManager->getSCCAttrs(phiSCC);
-
+    assert(sccInfo != nullptr);
     if (sccInfo->canExecuteReducibly()) {
       continue;
     }
     if (sccInfo->isInductionVariableSCC()) {
       continue;
     }
+    if (loopIVManager->doesContributeToComputeAnInductionVariable(&phi)){
+      continue ;
+    }
     errs() << "HELIX:    Spill " << phi << "\n";
     originalLoopCarriedPHIs.push_back(&phi);
     auto clonePHI = (PHINode *)(helixTask->getCloneOfOriginalInstruction(&phi));
+    assert(clonePHI != nullptr);
     clonedLoopCarriedPHIs.push_back(clonePHI);
   }
 
@@ -64,8 +70,8 @@ void HELIX::spillLoopCarriedDataDependencies (LoopDependenceInfo *LDI, DataFlowR
    * Register each PHI as part of the loop carried environment
    */
   std::vector<Type *> phiTypes;
-  std::set<int> nonReducablePHIs;
-  std::set<int> cannotReduceLoopCarriedPHIs;
+  std::set<uint32_t> nonReducablePHIs;
+  std::set<uint32_t> cannotReduceLoopCarriedPHIs;
   for (auto i = 0; i < clonedLoopCarriedPHIs.size(); ++i) {
     auto phiType = clonedLoopCarriedPHIs[i]->getType();
     phiTypes.push_back(phiType);
@@ -83,18 +89,16 @@ void HELIX::spillLoopCarriedDataDependencies (LoopDependenceInfo *LDI, DataFlowR
   /*
    * Register a new environment builder and the single HELIX task
    */
-  this->loopCarriedEnvBuilder = new EnvBuilder(this->noelle.getProgram()->getContext());
-  this->loopCarriedEnvBuilder->createEnvVariables(phiTypes, nonReducablePHIs, cannotReduceLoopCarriedPHIs, 1);
-  this->loopCarriedEnvBuilder->createEnvUsers(1);
+  this->loopCarriedLoopEnvironmentBuilder = new LoopEnvironmentBuilder(this->noelle.getProgram()->getContext(), phiTypes, nonReducablePHIs, cannotReduceLoopCarriedPHIs, 1, 1);
 
   /*
    * Fetch the unique user of the environment builder dedicated to spilled variables.
    */
-  auto envUser = this->loopCarriedEnvBuilder->getUser(0);
+  auto envUser = this->loopCarriedLoopEnvironmentBuilder->getUser(0);
 
   envUser->setEnvArray(entryBuilder.CreateBitCast(
     helixTask->loopCarriedArrayArg,
-    PointerType::getUnqual(loopCarriedEnvBuilder->getEnvArrayTy())
+    PointerType::getUnqual(loopCarriedLoopEnvironmentBuilder->getEnvironmentArrayType())
   ));
 
   /*
@@ -102,15 +106,15 @@ void HELIX::spillLoopCarriedDataDependencies (LoopDependenceInfo *LDI, DataFlowR
    * Load incoming values from the preheader
    */
   IRBuilder<> loopFunctionBuilder(&*loopFunction->begin()->begin());
-  loopCarriedEnvBuilder->generateEnvArray(loopFunctionBuilder);
-  loopCarriedEnvBuilder->generateEnvVariables(loopFunctionBuilder);
+  loopCarriedLoopEnvironmentBuilder->generateEnvArray(loopFunctionBuilder);
+  loopCarriedLoopEnvironmentBuilder->generateEnvVariables(loopFunctionBuilder);
 
   IRBuilder<> builder(this->entryPointOfParallelizedLoop);
   for (auto envIndex = 0; envIndex < originalLoopCarriedPHIs.size(); ++envIndex) {
     auto phi = originalLoopCarriedPHIs[envIndex];
     auto preHeaderIndex = phi->getBasicBlockIndex(loopPreHeader);
     auto preHeaderV = phi->getIncomingValue(preHeaderIndex);
-    builder.CreateStore(preHeaderV, loopCarriedEnvBuilder->getEnvVar(envIndex));
+    builder.CreateStore(preHeaderV, loopCarriedLoopEnvironmentBuilder->getEnvironmentVariable(envIndex));
   }
 
   std::unordered_map<BasicBlock *, BasicBlock *> cloneToOriginalBlockMap;
@@ -273,8 +277,6 @@ void HELIX::defineFrontierForLoadsToSpilledLCD (
   DominatorSummary *originalLoopDS,
   std::unordered_set<BasicBlock *> &originalFrontierBlocks
 ) {
-
-  auto &loopHierarchy = LDI->getLoopHierarchyStructures();
   auto loopStructure = LDI->getLoopStructure();
   auto loopHeader = loopStructure->getHeader();
 

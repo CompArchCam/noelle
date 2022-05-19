@@ -39,13 +39,14 @@ void HELIX::addChunkFunctionExecutionAsideOriginalLoop (
   /*
    * Fetch the pointer to the environments
    */
-  auto envPtr = envBuilder->getEnvArrayInt8Ptr();
-  auto loopCarriedEnvPtr = loopCarriedEnvBuilder->getEnvArrayInt8Ptr();
+  auto envPtr = envBuilder->getEnvironmentArrayVoidPtr();
+  auto loopCarriedEnvPtr = this->loopCarriedLoopEnvironmentBuilder->getEnvironmentArrayVoidPtr();
 
   /*
    * Fetch the number of cores
    */
-  auto numCores = ConstantInt::get(this->noelle.int64, LDI->getMaximumNumberOfCores());
+  auto ltm = LDI->getLoopTransformationsManager();
+  auto numCores = ConstantInt::get(this->noelle.int64, ltm->getMaximumNumberOfCores());
 
   /*
    * Fetch the chunk size.
@@ -68,7 +69,7 @@ void HELIX::addChunkFunctionExecutionAsideOriginalLoop (
   /*
    * Propagate the last value of live-out variables to the code outside the parallelized loop.
    */
-  auto latestBBAfterCall =  this->propagateLiveOutEnvironment(LDI, numThreadsUsed);
+  auto latestBBAfterCall =  this->performReductionToAllReducableLiveOutVariables(LDI, numThreadsUsed);
 
   IRBuilder<> afterCallBuilder{latestBBAfterCall};
   afterCallBuilder.CreateBr(this->exitPointOfParallelizedLoop);

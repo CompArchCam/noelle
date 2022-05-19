@@ -135,7 +135,7 @@ void DSWP::createPipelineFromStages (LoopDependenceInfo *LDI, Noelle &par) {
    */
   this->allocateEnvironmentArray(LDI);
   this->populateLiveInEnvironment(LDI);
-  auto envPtr = envBuilder->getEnvArrayInt8Ptr();
+  auto envPtr = envBuilder->getEnvironmentArrayVoidPtr();
 
   /*
    * Reference the stages in an array
@@ -170,7 +170,7 @@ void DSWP::createPipelineFromStages (LoopDependenceInfo *LDI, Noelle &par) {
   /*
    * Propagate live-out values to the caller of the loop.
    */
-  auto latestBBAfterCall = this->propagateLiveOutEnvironment(LDI, numThreadsUsed);
+  auto latestBBAfterCall = this->performReductionToAllReducableLiveOutVariables(LDI, numThreadsUsed);
 
   IRBuilder<> afterCallBuilder{latestBBAfterCall};
   afterCallBuilder.CreateBr(this->exitPointOfParallelizedLoop);

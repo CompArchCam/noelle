@@ -35,7 +35,7 @@ LoopGoverningIVUtility::LoopGoverningIVUtility (
    *
    * Check where the IV is in the comparison (left or right).
    */
-  this->condition = attribution.getHeaderCmpInst();
+  this->condition = attribution.getHeaderCompareInstructionToComputeExitCondition();
   // TODO: Refer to whichever intermediate value is used in the comparison (known on attribution)
   this->doesOriginalCmpInstHaveIVAsLeftOperand = condition->getOperand(0) == attribution.getValueToCompareAgainstExitConditionValue();
 
@@ -47,7 +47,7 @@ LoopGoverningIVUtility::LoopGoverningIVUtility (
     if (conditionValueDerivationSet.find(&I) == conditionValueDerivationSet.end()) continue;
     conditionValueOrderedDerivation.push_back(&I);
   }
-  assert(IV.getSingleComputedStepValue() && isa<ConstantInt>(IV.getSingleComputedStepValue()));
+  assert(IV.getSingleComputedStepValue() && (isa<ConstantInt>(IV.getSingleComputedStepValue()) || isa<ConstantFP>(IV.getSingleComputedStepValue())));
 
   /*
    * Fetch information about the step value for the IV.
@@ -238,9 +238,9 @@ Value * LoopGoverningIVUtility::generateCodeToComputeTheTripCount (
    */
   Value *delta = nullptr;
   if (IV.isStepValuePositive()){
-    delta = builder.CreateSub(lastValue, startValue);
+    delta = IV.getIVType()->isIntegerTy() ? builder.CreateSub(lastValue, startValue) : builder.CreateFSub(lastValue, startValue);
   } else {
-    delta = builder.CreateSub(startValue, lastValue);
+    delta = IV.getIVType()->isIntegerTy() ? builder.CreateSub(startValue, lastValue) : builder.CreateFSub(startValue, lastValue);
   }
 
   /*
@@ -287,7 +287,7 @@ Value * LoopGoverningIVUtility::generateCodeToComputeValueToUseForAnIterationAgo
      * The value used is the PHI.
      * Hence, we must generate code to compute the value of the previous iteration.
      */
-    auto prevIterationValue = builder.CreateSub(currentIterationValue, stepValue);
+    auto prevIterationValue = IV.getIVType()->isIntegerTy() ? builder.CreateSub(currentIterationValue, stepValue) : builder.CreateFSub(currentIterationValue, stepValue);
 
     return prevIterationValue;
   }

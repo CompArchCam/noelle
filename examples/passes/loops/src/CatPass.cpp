@@ -1,9 +1,10 @@
+#include <algorithm>
+
 #include "llvm/Pass.h"
 #include "llvm/IR/Function.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
-#include <algorithm>
 
 #include "noelle/core/Noelle.hpp"
 
@@ -37,27 +38,32 @@ namespace {
        * fetch the loops with all their abstractions 
        * (e.g., loop dependence graph, sccdag)
        */
-      auto loops = noelle.getLoops();
-      //auto loops = noelle.getLoops(mainF);
+      auto loopStructures = noelle.getLoopStructures();
+      //auto loopStructures = noelle.getLoopStructures(mainF);
 
       /*
        * Print loop induction variables and invariant.
        */
-      for (auto loop : *loops){
+      for (auto LS : *loopStructures){
 
         /*
          * Print the first instruction the loop executes.
          */
-        auto LS = loop->getLoopStructure();
         auto entryInst = LS->getEntryInstruction();
         errs() << "Loop " << *entryInst << "\n";
+
+        /*
+         * Fetch the LoopDependenceInfo
+         */
+        auto loop = noelle.getLoop(LS);
+        auto loopNode = loop->getLoopHierarchyStructures();
 
         /*
          * Print some information about the loop.
          */
         errs() << " Function = " << LS->getFunction()->getName() << "\n";
         errs() << " Nesting level = " << LS->getNestingLevel() << "\n";
-        errs() << " This loop has " << LS->getNumberOfSubLoops() << " sub-loops (including sub-loops of sub-loops)\n";
+        errs() << " This loop has " << loopNode->getNumberOfSubLoops() << " sub-loops (including sub-loops of sub-loops)\n";
 
         /*
          * Induction variables.
@@ -152,12 +158,6 @@ namespace {
 
       }
       errs() << "\n";
-
-      /*
-       * Fetch the loops with only the loop structure abstraction.
-       */
-      auto loopStructures = noelle.getLoopStructures();
-      //auto loopStructures = noelle.getLoopStructures(mainF);
 
       /*
        * Iterate over all loops, 

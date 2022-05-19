@@ -110,7 +110,7 @@ void DOALL::rewireLoopToIterateChunks (
    */
   auto loopGoverningIVAttr = LDI->getLoopGoverningIVAttribution();
   LoopGoverningIVUtility ivUtility(loopSummary, *allIVInfo, *loopGoverningIVAttr);
-  auto cmpInst = cast<CmpInst>(task->getCloneOfOriginalInstruction(loopGoverningIVAttr->getHeaderCmpInst()));
+  auto cmpInst = cast<CmpInst>(task->getCloneOfOriginalInstruction(loopGoverningIVAttr->getHeaderCompareInstructionToComputeExitCondition()));
   auto brInst = cast<BranchInst>(task->getCloneOfOriginalInstruction(loopGoverningIVAttr->getHeaderBrInst()));
   auto basicBlockToJumpToWhenTheLoopEnds = task->getLastBlock(0);
   ivUtility.updateConditionAndBranchToCatchIteratingPastExitValue(cmpInst, brInst, basicBlockToJumpToWhenTheLoopEnds);
@@ -275,7 +275,7 @@ void DOALL::rewireLoopToIterateChunks (
        * Fetch the header PHI of the live-out variable.
        * Check whether the header PHI is part of the set of PHIs we need to guard
        */
-      auto producer = cast<Instruction>(LDI->environment->producerAt(envIndex));
+      auto producer = cast<Instruction>(LDI->getEnvironment()->producerAt(envIndex));
       auto scc = sccdag->sccOfValue(producer);
       auto sccInfo = sccManager->getSCCAttrs(scc);
       auto headerPHI = sccInfo->getSingleHeaderPHI();

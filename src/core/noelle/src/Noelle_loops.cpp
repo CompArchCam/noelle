@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 - 2021  Angelo Matni, Simone Campanoni
+ * Copyright 2016 - 2022  Angelo Matni, Simone Campanoni
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -46,9 +46,11 @@ std::vector<LoopStructure *> * Noelle::getLoopStructures (
      * Check if the loop is hot enough.
      */
     auto loopStructure = new LoopStructure{loop};
-    if (!isLoopHot(loopStructure, minimumHotness)) {
-      delete loopStructure;
-      continue;
+    if (minimumHotness > 0){
+      if (!isLoopHot(loopStructure, minimumHotness)) {
+        delete loopStructure;
+        continue;
+      }
     }
 
     /*
@@ -196,20 +198,20 @@ std::vector<LoopStructure *> * Noelle::getLoopStructures (
 }
 
 LoopDependenceInfo * Noelle::getLoop (
-    LoopStructure *loop
-    ) {
+  LoopStructure *l
+  ) {
 
   /*
    * Check if the loop is valid.
    */
-  if (loop == nullptr){
+  if (l == nullptr){
     return nullptr;
   }
 
   /*
    * Compute the LDI abstraction.
    */
-  auto ldi = this->getLoop(loop, {});
+  auto ldi = this->getLoop(l, {});
 
   return ldi;
 }
@@ -228,17 +230,10 @@ LoopDependenceInfo * Noelle::getLoop (
   auto DS = this->getDominators(function);
 
   /*
-   * Fetch the llvm loop corresponding to the loop structure
-   */
-  auto& LI = getAnalysis<LoopInfoWrapperPass>(*function).getLoopInfo();
-  auto& SE = getAnalysis<ScalarEvolutionWrapperPass>(*function).getSE();
-  auto llvmLoop = LI.getLoopFor(header);
-
-  /*
    * Check of loopIndex provided is within bounds
    */
   if (this->loopHeaderToLoopIndexMap.find(header) == this->loopHeaderToLoopIndexMap.end()){
-    auto ldi = new LoopDependenceInfo(funcPDG, llvmLoop, *DS, SE, this->om->getMaximumNumberOfCores(), this->enableFloatAsReal, optimizations, this->loopAwareDependenceAnalysis);
+    auto ldi = this->getLoopDependenceInfoForLoop(header, funcPDG, DS, 0, 8, this->om->getMaximumNumberOfCores(), optimizations);
 
     delete DS;
     return ldi;
@@ -253,7 +248,7 @@ LoopDependenceInfo * Noelle::getLoop (
    * No filter file was provided. Construct LDI without profiler configurables
    */
   if (!this->hasReadFilterFile) {
-    auto ldi = new LoopDependenceInfo(funcPDG, llvmLoop, *DS, SE, this->om->getMaximumNumberOfCores(), this->enableFloatAsReal, optimizations, this->loopAwareDependenceAnalysis);
+    auto ldi = this->getLoopDependenceInfoForLoop(header, funcPDG, DS, 0, 8, this->om->getMaximumNumberOfCores(), optimizations);
 
     delete DS;
     return ldi;
@@ -273,10 +268,9 @@ LoopDependenceInfo * Noelle::getLoop (
       && "Noelle: passed user a filtered loop yet it only has max cores <= 1");
 
   auto ldi = this->getLoopDependenceInfoForLoop(
-      llvmLoop,
+      header, 
       funcPDG,
       DS,
-      &SE,
       this->techniquesToDisable[loopIndex],
       this->DOALLChunkSize[loopIndex],
       maximumNumberOfCoresForTheParallelization,
@@ -350,25 +344,48 @@ std::vector<LoopDependenceInfo *> * Noelle::getLoops (
 
   /*
    * Consider these loops.
+   *
+   * Collect the loop structures.
    */
+  std::vector<LoopStructure *> loopStructures;
+  std::map<LoopStructure *, Loop *> loopStructureToLLVMLoop;
   for (auto loop : loops){
 
     /*
      * Check if the loop is hot enough.
      */
-    LoopStructure loopS{loop};
-    if (!isLoopHot(&loopS, minimumHotness)){
+    auto loopS = new LoopStructure(loop);
+    if (!isLoopHot(loopS, minimumHotness)){
+      delete loopS;
       continue ;
     }
 
     /*
-     * Allocate the loop wrapper.
+     * Append the loop
      */
     for(auto edge : funcPDG->getEdges()) {
       assert(!edge->isLoopCarriedDependence() && "Flag set");
     }
-    auto ldi = new LoopDependenceInfo(funcPDG, loop, *DS, SE, this->om->getMaximumNumberOfCores(), this->enableFloatAsReal, this->loopAwareDependenceAnalysis);
-    allLoops->push_back(ldi);
+    loopStructures.push_back(loopS);
+    loopStructureToLLVMLoop[loopS] = loop;
+  }
+
+  /*
+   * Organize loops in forest.
+   */
+  auto forest = this->organizeLoopsInTheirNestingForest(loopStructures);
+
+  /*
+   * Allocate the loop wrapper.
+   */
+  for (auto tree : forest->getTrees()){
+    for (auto loopNode : tree->getNodes()){
+      auto ls = loopNode->getLoop();
+      assert(ls != nullptr);
+      auto LLVMLoop = loopStructureToLLVMLoop[ls];
+      auto ldi = new LoopDependenceInfo(funcPDG, loopNode, LLVMLoop, *DS, SE, this->om->getMaximumNumberOfCores(), this->enableFloatAsReal, this->loopAwareDependenceAnalysis);
+      allLoops->push_back(ldi);
+    }
   }
 
   /*
@@ -415,10 +432,10 @@ std::vector<LoopDependenceInfo *> * Noelle::getLoops (
   /*
    * Append loops of each function.
    */
-  auto nextLoopIndex = 0;
   if (this->verbose >= Verbosity::Maximal){
     errs() << "Noelle: Filter out cold code\n" ;
   }
+  auto nextLoopIndex = 0;
   for (auto function : *functions){
 
     /*
@@ -466,21 +483,28 @@ std::vector<LoopDependenceInfo *> * Noelle::getLoops (
 
     /*
      * Consider these loops.
+     *
+     * Organize loops in their forest
      */
+    std::vector<LoopStructure *> loopStructures;
+    std::map<LoopStructure *, uint32_t> loopIDs;
     for (auto loop : loops){
       auto currentLoopIndex = nextLoopIndex++;
 
       /*
        * Check if the loop is hot enough.
        */
-      LoopStructure loopS{loop};
-      if (!isLoopHot(&loopS, minimumHotness)){
+      auto loopS = new LoopStructure(loop);
+      if (!isLoopHot(loopS, minimumHotness)){
         errs() << "Noelle:  Disable loop \"" << currentLoopIndex << "\" as cold code\n";
+
+        /*
+         * Free the memory.
+         */
+        delete loopS;
+
         continue ;
       }
-
-      // TODO: Print out more information than just loop hotness, perhaps the loop header label
-      // errs() << "Noelle:  Loop hotness = " << hotness << "\n" ;
 
       /*
        * Check if we have to filter loops.
@@ -488,11 +512,10 @@ std::vector<LoopDependenceInfo *> * Noelle::getLoops (
       if (!filterLoops){
 
         /*
-         * Allocate the loop wrapper.
+         * Allocate the loop 
          */
-        auto ldi = new LoopDependenceInfo(funcPDG, loop, *DS, SE, this->om->getMaximumNumberOfCores(), this->enableFloatAsReal, this->loopAwareDependenceAnalysis);
-
-        allLoops->push_back(ldi);
+        loopStructures.push_back(loopS);
+        loopIDs[loopS] = currentLoopIndex;
         continue ;
       }
 
@@ -511,6 +534,12 @@ std::vector<LoopDependenceInfo *> * Noelle::getLoops (
          *
          * Jump to the next loop.
          */
+
+        /*
+         * Free the memory.
+         */
+        delete loopS;
+
         continue ;
       }
 
@@ -522,21 +551,61 @@ std::vector<LoopDependenceInfo *> * Noelle::getLoops (
         abort();
       }
 
-      auto ldi = getLoopDependenceInfoForLoop(
-          loop,
-          funcPDG,
-          DS,
-          &SE,
-          this->techniquesToDisable[currentLoopIndex],
-          this->DOALLChunkSize[currentLoopIndex],
-          maximumNumberOfCoresForTheParallelization,
-          {}
-          );
-
       /*
        * The current loop needs to be considered as specified by the user.
        */
-      allLoops->push_back(ldi);
+      loopStructures.push_back(loopS);
+      loopIDs[loopS] = currentLoopIndex;
+    }
+
+    /*
+     * Organize the loops in forest.
+     */
+    auto forest = this->organizeLoopsInTheirNestingForest(loopStructures);
+
+    /*
+     * Compute the LoopDependeceInfo abstractions.
+     */
+    for (auto tree : forest->getTrees()){
+      for (auto loopNode : tree->getNodes()){
+
+        /*
+         * Fetch the loop
+         */
+        auto ls = loopNode->getLoop();
+        assert(loopIDs.find(ls) != loopIDs.end());
+        auto currentLoopIndex = loopIDs[ls];
+
+        /*
+         * Fetch the LLVM loop
+         */
+        auto& LI = getAnalysis<LoopInfoWrapperPass>(*ls->getFunction()).getLoopInfo();
+        auto LLVMLoop = LI.getLoopFor(ls->getHeader());
+
+        /*
+         * Check if we have to filter loops.
+         */
+        LoopDependenceInfo *ldi = nullptr;
+        if (!filterLoops){
+          ldi = new LoopDependenceInfo(funcPDG, loopNode, LLVMLoop, *DS, SE, this->om->getMaximumNumberOfCores(), this->enableFloatAsReal, this->loopAwareDependenceAnalysis);
+
+        } else {
+          auto maximumNumberOfCoresForTheParallelization = loopThreads[currentLoopIndex];
+          assert(maximumNumberOfCoresForTheParallelization > 1);
+          ldi = this->getLoopDependenceInfoForLoop(
+            loopNode,
+            LLVMLoop,
+            funcPDG,
+            DS,
+            &SE,
+            this->techniquesToDisable[currentLoopIndex],
+            this->DOALLChunkSize[currentLoopIndex],
+            maximumNumberOfCoresForTheParallelization,
+            {}
+            );
+        }
+        allLoops->push_back(ldi);
+      }
     }
 
     /*
@@ -903,6 +972,44 @@ void Noelle::sortByStaticNumberOfInstructions (std::vector<LoopDependenceInfo *>
 }
 
 LoopDependenceInfo * Noelle::getLoopDependenceInfoForLoop (
+  BasicBlock *header,
+  PDG *functionPDG,
+  DominatorSummary *DS,
+  uint32_t techniquesToDisable,
+  uint32_t DOALLChunkSize,
+  uint32_t maxCores,
+  std::unordered_set<LoopDependenceInfoOptimization> optimizations
+){
+
+  /*
+   * Fetch the function
+   */
+  auto function = header->getParent();
+
+  /*
+   * Fetch the ForestNode of the loop
+   */
+  auto allLoopsOfFunction = this->getLoopStructures(function, 0);
+  auto forest = this->organizeLoopsInTheirNestingForest(*allLoopsOfFunction);
+  auto newLoopNode = forest->getInnermostLoopThatContains(&*header->begin());
+
+  /*
+   * Fetch the llvm loop corresponding to the loop structure
+   */
+  auto& LI = getAnalysis<LoopInfoWrapperPass>(*function).getLoopInfo();
+  auto& SE = getAnalysis<ScalarEvolutionWrapperPass>(*function).getSE();
+  auto llvmLoop = LI.getLoopFor(header);
+
+  /*
+   * Compute the LoopDependenceInfo
+   */
+  auto ldi = this->getLoopDependenceInfoForLoop(newLoopNode, llvmLoop, functionPDG, DS, &SE, techniquesToDisable, DOALLChunkSize, maxCores, optimizations);
+
+  return ldi;
+}
+
+LoopDependenceInfo * Noelle::getLoopDependenceInfoForLoop (
+    StayConnectedNestedLoopForestNode *loopNode,
     Loop *loop,
     PDG *functionPDG,
     DominatorSummary *DS,
@@ -918,56 +1025,55 @@ LoopDependenceInfo * Noelle::getLoopDependenceInfoForLoop (
    */
   auto ldi = new LoopDependenceInfo(
       functionPDG, 
+      loopNode,
       loop, 
       *DS, 
       *SE, 
       maxCores,
       this->enableFloatAsReal, 
       optimizations, 
-      this->loopAwareDependenceAnalysis);
-
-  /*
-   * Set the loop constraints specified by INDEX_FILE.
-   *
-   * DOALL chunk size is the one defined by INDEX_FILE + 1. This is because chunk size must start from 1.
-   */
-  ldi->DOALLChunkSize = DOALLChunkSizeForLoop + 1;
+      this->loopAwareDependenceAnalysis,
+      DOALLChunkSizeForLoop + 1     /* DOALL chunk size is the one defined by INDEX_FILE + 1. 
+                                       This is because chunk size must start from 1. 
+                                       */
+      );
 
   /*
    * Set the techniques that are enabled.
    */
+  auto ltm = ldi->getLoopTransformationsManager();
   auto disableTransformations = techniquesToDisableForLoop;
   switch (disableTransformations){
 
     case 0:
-      ldi->enableAllTransformations();
+      ltm->enableAllTransformations();
       break ;
 
     case 1:
-      ldi->disableTransformation(DSWP_ID);
+      ltm->disableTransformation(DSWP_ID);
       break ;
 
     case 2:
-      ldi->disableTransformation(HELIX_ID);
+      ltm->disableTransformation(HELIX_ID);
       break ;
 
     case 3:
-      ldi->disableTransformation(DOALL_ID);
+      ltm->disableTransformation(DOALL_ID);
       break ;
 
     case 4:
-      ldi->disableTransformation(DSWP_ID);
-      ldi->disableTransformation(HELIX_ID);
+      ltm->disableTransformation(DSWP_ID);
+      ltm->disableTransformation(HELIX_ID);
       break ;
 
     case 5:
-      ldi->disableTransformation(DSWP_ID);
-      ldi->disableTransformation(DOALL_ID);
+      ltm->disableTransformation(DSWP_ID);
+      ltm->disableTransformation(DOALL_ID);
       break ;
 
     case 6:
-      ldi->disableTransformation(HELIX_ID);
-      ldi->disableTransformation(DOALL_ID);
+      ltm->disableTransformation(HELIX_ID);
+      ltm->disableTransformation(DOALL_ID);
       break ;
 
     default:
@@ -1051,8 +1157,23 @@ void Noelle::filterOutLoops (
 
   return ;
 }
+      
+StayConnectedNestedLoopForest * Noelle::getProgramLoopsNestingForest (void) {
 
-noelle::StayConnectedNestedLoopForest * Noelle::organizeLoopsInTheirNestingForest (
+  /*
+   * Fetch all the loops
+   */
+  auto allLoops = this->getLoopStructures();
+
+  /*
+   * Organize the loops into a forest
+   */
+  auto forest = this->organizeLoopsInTheirNestingForest(*allLoops);
+
+  return forest;
+}
+
+StayConnectedNestedLoopForest * Noelle::organizeLoopsInTheirNestingForest (
   std::vector<LoopStructure *> const & loops
   ) {
 

@@ -19,54 +19,59 @@ namespace llvm::noelle {
 
 LoopDependenceInfo::LoopDependenceInfo (
   PDG *fG,
+  StayConnectedNestedLoopForestNode *loopNode,
   Loop *l,
   DominatorSummary &DS,
   ScalarEvolution &SE
-) : LoopDependenceInfo{fG, l, DS, SE, Architecture::getNumberOfLogicalCores(), true, {}, true} 
+) : LoopDependenceInfo{fG, loopNode, l, DS, SE, Architecture::getNumberOfLogicalCores(), true, {}, true} 
   {
   return ;
 }
 
 LoopDependenceInfo::LoopDependenceInfo(
   PDG *fG,
+  StayConnectedNestedLoopForestNode *loopNode,
   Loop *l,
   DominatorSummary &DS,
   ScalarEvolution &SE,
   uint32_t maxCores,
   bool enableFloatAsReal
-) : LoopDependenceInfo{fG, l, DS, SE, maxCores, enableFloatAsReal, {}, true} {
+) : LoopDependenceInfo{fG, loopNode, l, DS, SE, maxCores, enableFloatAsReal, {}, true} {
 
   return ;
 }
 
 LoopDependenceInfo::LoopDependenceInfo(
   PDG *fG,
+  StayConnectedNestedLoopForestNode *loopNode,
   Loop *l,
   DominatorSummary &DS,
   ScalarEvolution &SE,
   uint32_t maxCores,
   bool enableFloatAsReal,
   std::unordered_set<LoopDependenceInfoOptimization> optimizations
-) : LoopDependenceInfo{fG, l, DS, SE, maxCores, enableFloatAsReal, optimizations, true} {
+) : LoopDependenceInfo{fG, loopNode, l, DS, SE, maxCores, enableFloatAsReal, optimizations, true} {
 
   return ;
 }
 
 LoopDependenceInfo::LoopDependenceInfo (
   PDG *fG,
+  StayConnectedNestedLoopForestNode *loopNode,
   Loop *l,
   DominatorSummary &DS,
   ScalarEvolution &SE,
   uint32_t maxCores,
   bool enableFloatAsReal,
   bool enableLoopAwareDependenceAnalyses
-) : LoopDependenceInfo{fG, l, DS, SE, maxCores, enableFloatAsReal, {}, enableLoopAwareDependenceAnalyses}{
+) : LoopDependenceInfo{fG, loopNode, l, DS, SE, maxCores, enableFloatAsReal, {}, enableLoopAwareDependenceAnalyses}{
 
   return ;
 }
 
 LoopDependenceInfo::LoopDependenceInfo(
   PDG *fG,
+  StayConnectedNestedLoopForestNode *loopNode,
   Loop *l,
   DominatorSummary &DS,
   ScalarEvolution &SE,
@@ -74,12 +79,26 @@ LoopDependenceInfo::LoopDependenceInfo(
   bool enableFloatAsReal,
   std::unordered_set<LoopDependenceInfoOptimization> optimizations,
   bool enableLoopAwareDependenceAnalyses
-) : DOALLChunkSize{8},
-    maximumNumberOfCoresForTheParallelization{maxCores},
-    liSummary{l},
-    enabledOptimizations{optimizations},
-    areLoopAwareAnalysesEnabled{enableLoopAwareDependenceAnalyses}
+) : LoopDependenceInfo(fG, loopNode, l, DS, SE, maxCores, enableFloatAsReal, optimizations, enableLoopAwareDependenceAnalyses, 8)
+{
+  return ;
+}
+
+LoopDependenceInfo::LoopDependenceInfo(
+  PDG *fG,
+  StayConnectedNestedLoopForestNode *loopNode,
+  Loop *l,
+  DominatorSummary &DS,
+  ScalarEvolution &SE,
+  uint32_t maxCores,
+  bool enableFloatAsReal,
+  std::unordered_set<LoopDependenceInfoOptimization> optimizations,
+  bool enableLoopAwareDependenceAnalyses,
+  uint32_t chunkSize
+) :   loop{loopNode}
+    , memoryCloningAnalysis{nullptr}
   {
+  assert(this->loop != nullptr);
 
   /*
    * Assertions.
@@ -89,9 +108,14 @@ LoopDependenceInfo::LoopDependenceInfo(
   }
 
   /*
+   * Create the loop transformations manager
+   */
+  this->loopTransformationsManager = new LoopTransformationsManager(maxCores, chunkSize, optimizations, enableLoopAwareDependenceAnalyses);
+
+  /*
    * Enable all transformations.
    */
-  this->enableAllTransformations();
+  this->loopTransformationsManager->enableAllTransformations();
 
   /*
    * Fetch the loop dependence graph (i.e., the subset of the PDG that relates to the loop @l) and its SCCDAG.
@@ -99,21 +123,30 @@ LoopDependenceInfo::LoopDependenceInfo(
   this->fetchLoopAndBBInfo(l, SE);
   auto ls = this->getLoopStructure();
   auto loopExitBlocks = ls->getLoopExitBasicBlocks();
-  auto DGs = this->createDGsForLoop(l, fG, DS, SE);
+  auto DGs = this->createDGsForLoop(l, loopNode, fG, DS, SE);
   this->loopDG = DGs.first;
   auto loopSCCDAG = DGs.second;
 
   /*
    * Create the environment for the loop.
+   *
+   * Exclude stack objects that will be cloned. To do so, we need to collect this set of objects.
    */
-  this->environment = new LoopEnvironment(loopDG, loopExitBlocks);
+  std::set<Value *> stackObjectsThatWillBeCloned;
+  if (this->memoryCloningAnalysis != nullptr){
+    for (auto memObject : this->memoryCloningAnalysis->getClonableMemoryLocations()){
+      auto stackObject = memObject->getAllocation();
+      stackObjectsThatWillBeCloned.insert(stackObject);
+    }
+  }
+  this->environment = new LoopEnvironment(loopDG, loopExitBlocks, stackObjectsThatWillBeCloned);
 
   /*
    * Create the invariant manager.
    *
    * This step identifies instructions that are loop invariants.
    */
-  auto topLoop = this->liSummary.getLoopNestingTreeRoot();
+  auto topLoop = this->loop->getLoop();
   this->invariantManager = new InvariantManager(topLoop, this->loopDG);
 
   /*
@@ -127,19 +160,18 @@ LoopDependenceInfo::LoopDependenceInfo(
    * And then, we can identify IVs from this new SCCDAG.
    */
   auto loopSCCDAGWithoutMemoryDeps = this->computeSCCDAGWithOnlyVariableAndControlDependences(loopDG);
-  this->inductionVariables = new InductionVariableManager(liSummary, *invariantManager, SE, *loopSCCDAGWithoutMemoryDeps, *environment, *l);
+  this->inductionVariables = new InductionVariableManager(this->loop, *invariantManager, SE, *loopSCCDAGWithoutMemoryDeps, *environment, *l);
 
   /*
    * Calculate various attributes on SCCs
    */
-  this->inductionVariables = new InductionVariableManager(liSummary, *invariantManager, SE, *loopSCCDAG, *environment, *l);
-  this->sccdagAttrs = new SCCDAGAttrs(enableFloatAsReal, loopDG, loopSCCDAG, this->liSummary, SE, *inductionVariables, DS);
-  this->domainSpaceAnalysis = new LoopIterationDomainSpaceAnalysis(liSummary, *this->inductionVariables, SE);
+  this->sccdagAttrs = new SCCDAGAttrs(enableFloatAsReal, loopDG, loopSCCDAG, this->loop, SE, *inductionVariables, DS);
+  this->domainSpaceAnalysis = new LoopIterationDomainSpaceAnalysis(this->loop, *this->inductionVariables, SE);
 
   /*
    * Collect induction variable information
    */
-  auto iv = this->inductionVariables->getLoopGoverningInductionVariable(*liSummary.getLoop(*l->getHeader()));
+  auto iv = this->inductionVariables->getLoopGoverningInductionVariable(*topLoop);
   loopGoverningIVAttribution = iv == nullptr ? nullptr
     : new LoopGoverningIVAttribution(*iv, *loopSCCDAG->sccOfValue(iv->getLoopEntryPHI()), loopExitBlocks);
 
@@ -147,10 +179,18 @@ LoopDependenceInfo::LoopDependenceInfo(
 }
 
 void LoopDependenceInfo::copyParallelizationOptionsFrom (LoopDependenceInfo *otherLDI) {
-  this->DOALLChunkSize = otherLDI->DOALLChunkSize;
-  this->enabledTransformations = otherLDI->enabledTransformations;
-  this->maximumNumberOfCoresForTheParallelization = otherLDI->maximumNumberOfCoresForTheParallelization;
-  this->areLoopAwareAnalysesEnabled = otherLDI->areLoopAwareAnalysesEnabled;
+  auto otherLTM = otherLDI->getLoopTransformationsManager();
+  assert(otherLTM != nullptr);
+
+  /*
+   * Free the memory.
+   */
+  delete this->loopTransformationsManager ;
+
+  /*
+   * Clone the loop transformation manager
+   */
+  this->loopTransformationsManager = new LoopTransformationsManager(*otherLTM);
 
   return ;
 }
@@ -191,6 +231,7 @@ uint64_t LoopDependenceInfo::computeTripCounts (
 
 std::pair<PDG *, SCCDAG *> LoopDependenceInfo::createDGsForLoop (
   Loop *l,
+  StayConnectedNestedLoopForestNode *loopNode,
   PDG *functionDG,
   DominatorSummary &DS,
   ScalarEvolution &SE
@@ -211,7 +252,13 @@ std::pair<PDG *, SCCDAG *> LoopDependenceInfo::createDGsForLoop (
   for (auto internalNode : loopDG->internalNodePairs()) {
       loopInternals.push_back(internalNode.first);
   }
+
+  /*
+   * Compute the SCCDAG using only variable-related dependences.
+   * This will be used to detect induction variables.
+   */
   auto loopInternalDG = loopDG->createSubgraphFromValues(loopInternals, false);
+  auto loopSCCDAGWithoutMemoryDeps = this->computeSCCDAGWithOnlyVariableAndControlDependences(loopInternalDG);
 
   /*
    * Detect the loop-carried data dependences.
@@ -224,34 +271,37 @@ std::pair<PDG *, SCCDAG *> LoopDependenceInfo::createDGsForLoop (
    * HACK: The SCCDAG is constructed with a loop internal DG to avoid external nodes in the loop DG
    * which provide context (live-ins/live-outs) but which complicate analyzing the resulting SCCDAG 
    */
-  LoopCarriedDependencies::setLoopCarriedDependencies(liSummary, DS, *loopDG);
+  LoopCarriedDependencies::setLoopCarriedDependencies(loopNode, DS, *loopDG);
+
+  /*
+   * Detect loop invariants and induction variables.
+   */
+  auto loopStructure = loopNode->getLoop();
+  auto loopExitBlocks = loopStructure->getLoopExitBasicBlocks();
+  auto env = LoopEnvironment(loopDG, loopExitBlocks, {});
+  auto invManager = InvariantManager(loopStructure, loopDG);
+  auto ivManager = InductionVariableManager(loopNode, invManager, SE, *loopSCCDAGWithoutMemoryDeps, env, *l); 
 
   /*
    * Perform loop-aware memory dependence analysis to refine the loop dependence graph.
    */
-  auto loopStructure = liSummary.getLoopNestingTreeRoot();
-  auto loopExitBlocks = loopStructure->getLoopExitBasicBlocks();
-  auto env = LoopEnvironment(loopDG, loopExitBlocks);
-  auto invManager = InvariantManager(loopStructure, loopDG);
-  auto loopSCCDAGWithoutMemoryDeps = this->computeSCCDAGWithOnlyVariableAndControlDependences(loopInternalDG);
-  auto ivManager = InductionVariableManager(liSummary, invManager, SE, *loopSCCDAGWithoutMemoryDeps, env, *l); 
-  auto domainSpace = LoopIterationDomainSpaceAnalysis(liSummary, ivManager, SE);
-  if (this->areLoopAwareAnalysesEnabled){
-    refinePDGWithLoopAwareMemDepAnalysis(loopDG, l, loopStructure, &liSummary, &domainSpace);
+  auto domainSpace = LoopIterationDomainSpaceAnalysis(loopNode, ivManager, SE);
+  if (this->loopTransformationsManager->areLoopAwareAnalysesEnabled()){
+    refinePDGWithLoopAwareMemDepAnalysis(loopDG, l, loopStructure, loopNode, &domainSpace);
   }
 
   /*
    * Analyze the loop to identify opportunities of cloning stack objects.
    */
-  if (enabledOptimizations.find(LoopDependenceInfoOptimization::MEMORY_CLONING_ID) != enabledOptimizations.end()) {
-    this->removeUnnecessaryDependenciesThatCloningMemoryNegates(loopDG, DS);
+  if (this->loopTransformationsManager->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)){
+    this->removeUnnecessaryDependenciesThatCloningMemoryNegates(loopNode, loopDG, DS);
   }
 
   /*
    * Remove memory dependences with known thread-safe library functions.
    */
-  if (enabledOptimizations.find(LoopDependenceInfoOptimization::THREAD_SAFE_LIBRARY_ID) != enabledOptimizations.end()) {
-    this->removeUnnecessaryDependenciesWithThreadSafeLibraryFunctions(loopDG, DS);
+  if (this->loopTransformationsManager->isOptimizationEnabled(LoopDependenceInfoOptimization::THREAD_SAFE_LIBRARY_ID)){
+    this->removeUnnecessaryDependenciesWithThreadSafeLibraryFunctions(loopNode, loopDG, DS);
   }
 
   /*
@@ -291,6 +341,7 @@ std::pair<PDG *, SCCDAG *> LoopDependenceInfo::createDGsForLoop (
 }
 
 void LoopDependenceInfo::removeUnnecessaryDependenciesWithThreadSafeLibraryFunctions (
+  StayConnectedNestedLoopForestNode *loopNode,
   PDG *loopDG,
   DominatorSummary &DS
 ){
@@ -298,13 +349,13 @@ void LoopDependenceInfo::removeUnnecessaryDependenciesWithThreadSafeLibraryFunct
   /*
    * Fetch the loop sub-tree rooted at @this.
    */
-  auto rootLoop = liSummary.getLoopNestingTreeRoot();
+  auto rootLoop = loopNode->getLoop();
 
   /*
    * Identify the dependences to remove.
    */
   std::unordered_set<DGEdge<Value> *> edgesToRemove;
-  for (auto edge : LoopCarriedDependencies::getLoopCarriedDependenciesForLoop(*rootLoop, liSummary, *loopDG)) {
+  for (auto edge : LoopCarriedDependencies::getLoopCarriedDependenciesForLoop(*rootLoop, loopNode, *loopDG)) {
 
     /*
      * Only memory dependences can be removed.
@@ -355,6 +406,7 @@ void LoopDependenceInfo::removeUnnecessaryDependenciesWithThreadSafeLibraryFunct
 }
 
 void LoopDependenceInfo::removeUnnecessaryDependenciesThatCloningMemoryNegates (
+  StayConnectedNestedLoopForestNode *loopNode,
   PDG *loopInternalDG,
   DominatorSummary &DS
 ) {
@@ -362,7 +414,7 @@ void LoopDependenceInfo::removeUnnecessaryDependenciesThatCloningMemoryNegates (
   /*
    * Fetch the loop sub-tree rooted at @this.
    */
-  auto rootLoop = liSummary.getLoopNestingTreeRoot();
+  auto rootLoop = loopNode->getLoop();
 
   /*
    * Create the memory cloning analyzer.
@@ -373,7 +425,7 @@ void LoopDependenceInfo::removeUnnecessaryDependenciesThatCloningMemoryNegates (
    * Identify opportunities for cloning stack locations.
    */
   std::unordered_set<DGEdge<Value> *> edgesToRemove;
-  for (auto edge : LoopCarriedDependencies::getLoopCarriedDependenciesForLoop(*rootLoop, liSummary, *loopInternalDG)) {
+  for (auto edge : LoopCarriedDependencies::getLoopCarriedDependenciesForLoop(*rootLoop, loopNode, *loopInternalDG)) {
 
     /*
      * Only memory dependences can be removed by cloning memory objects.
@@ -447,32 +499,6 @@ void LoopDependenceInfo::removeUnnecessaryDependenciesThatCloningMemoryNegates (
   return ;
 }
  
-bool LoopDependenceInfo::isTransformationEnabled (Transformation transformation){
-  auto exist = this->enabledTransformations.find(transformation) != this->enabledTransformations.end();
-
-  return exist;
-}
-
-void LoopDependenceInfo::enableAllTransformations (void){
-  for (int32_t i = Transformation::First; i <= Transformation::Last; i++){
-    auto t = static_cast<Transformation>(i);
-    this->enabledTransformations.insert(t);
-  }
-
-  return ;
-}
-
-void LoopDependenceInfo::disableTransformation (Transformation transformationToDisable){
-  this->enabledTransformations.erase(transformationToDisable);
-
-  return ;
-}
-
-bool LoopDependenceInfo::isOptimizationEnabled (LoopDependenceInfoOptimization optimization) const {
-  auto enabled = this->enabledOptimizations.find(optimization) != this->enabledOptimizations.end();
-  return enabled;
-}
-
 PDG * LoopDependenceInfo::getLoopDG (void) const {
   return this->loopDG;
 }
@@ -484,7 +510,7 @@ bool LoopDependenceInfo::iterateOverSubLoopsRecursively (
   /*
    * Iterate over the children.
    */
-  for (auto subloop : this->liSummary.loops){
+  for (auto subloop : this->loop->getLoops()){
     if (funcToInvoke(*subloop)){
       return true ;
     }
@@ -509,15 +535,15 @@ uint64_t LoopDependenceInfo::getID (void) const {
 }
 
 LoopStructure * LoopDependenceInfo::getLoopStructure (void) const {
-  return this->liSummary.getLoopNestingTreeRoot();
+  return this->loop->getLoop();
 }
 
 LoopStructure * LoopDependenceInfo::getNestedMostLoopStructure (Instruction *I) const {
-  return this->liSummary.getLoop(*I);
+  return this->loop->getInnermostLoopThatContains(I);
 }
 
 bool LoopDependenceInfo::isSCCContainedInSubloop (SCC *scc) const {
-  return this->sccdagAttrs->isSCCContainedInSubloop(this->liSummary, scc);
+  return this->sccdagAttrs->isSCCContainedInSubloop(this->loop, scc);
 }
 
 InductionVariableManager * LoopDependenceInfo::getInductionVariableManager (void) const {
@@ -542,10 +568,6 @@ uint64_t LoopDependenceInfo::getCompileTimeTripCount (void) const {
   return this->tripCount;
 }
 
-uint32_t LoopDependenceInfo::getMaximumNumberOfCores (void) const {
-  return this->maximumNumberOfCoresForTheParallelization;
-}
-
 InvariantManager * LoopDependenceInfo::getInvariantManager (void) const {
   return this->invariantManager;
 }
@@ -554,8 +576,8 @@ LoopIterationDomainSpaceAnalysis * LoopDependenceInfo::getLoopIterationDomainSpa
   return this->domainSpaceAnalysis;
 }
 
-const LoopsSummary & LoopDependenceInfo::getLoopHierarchyStructures (void) const {
-  return this->liSummary;
+StayConnectedNestedLoopForestNode * LoopDependenceInfo::getLoopHierarchyStructures (void) const {
+  return this->loop;
 }
 
 SCCDAGAttrs * LoopDependenceInfo::getSCCManager (void) const {
@@ -599,6 +621,10 @@ SCCDAG * LoopDependenceInfo::computeSCCDAGWithOnlyVariableAndControlDependences 
   auto loopSCCDAGWithoutMemoryDeps = new SCCDAG(loopDGWithoutMemoryDeps);
 
   return loopSCCDAGWithoutMemoryDeps;
+}
+      
+LoopTransformationsManager * LoopDependenceInfo::getLoopTransformationsManager (void) const {
+  return this->loopTransformationsManager;
 }
 
 LoopDependenceInfo::~LoopDependenceInfo() {

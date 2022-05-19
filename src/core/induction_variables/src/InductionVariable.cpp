@@ -28,7 +28,13 @@ InductionVariable::InductionVariable  (
   traverseCycleThroughLoopEntryPHIToGetAllIVInstructions(LS);
   traverseConsumersOfIVInstructionsToGetAllDerivedSCEVInstructions(LS, IVM, SE);
   collectValuesInternalAndExternalToLoopAndSCC(LS, loopEnv);
-  deriveStepValue(LS, SE, referentialExpander, loopEnv);
+
+  if (ID.getKind() == InductionDescriptor::InductionKind::IK_FpInduction) {
+    this->singleStepValue = cast<SCEVUnknown>(stepSCEV)->getValue();
+    this->isComputedStepValueLoopInvariant = true;
+  } else {
+    deriveStepValue(LS, SE, referentialExpander);
+  }
 }
 
 InductionVariable::InductionVariable  (
@@ -57,7 +63,9 @@ InductionVariable::InductionVariable  (
   traverseCycleThroughLoopEntryPHIToGetAllIVInstructions(LS);
   traverseConsumersOfIVInstructionsToGetAllDerivedSCEVInstructions(LS, IVM, SE);
   collectValuesInternalAndExternalToLoopAndSCC(LS, loopEnv);
-  deriveStepValue(LS, SE, referentialExpander, loopEnv);
+  deriveStepValue(LS, SE, referentialExpander);
+
+  return ;
 }
 
 void InductionVariable::traverseCycleThroughLoopEntryPHIToGetAllIVInstructions (LoopStructure *LS) {
@@ -277,8 +285,7 @@ void InductionVariable::collectValuesInternalAndExternalToLoopAndSCC (
 void InductionVariable::deriveStepValue (
   LoopStructure *LS,
   ScalarEvolution &SE,
-  ScalarEvolutionReferentialExpander &referentialExpander,
-  LoopEnvironment &loopEnv
+  ScalarEvolutionReferentialExpander &referentialExpander
 ) {
 
   /*
@@ -460,9 +467,14 @@ bool InductionVariable::isStepValuePositive (void) const {
   /*
    * Check if the step value is positive
    */
-  auto p = cast<ConstantInt>(stepValue)->getValue().isStrictlyPositive();
+  if (this->loopEntryPHIType->isIntegerTy()) {
+    return cast<ConstantInt>(stepValue)->getValue().isStrictlyPositive();
+  } else {
+    assert(this->loopEntryPHIType->isFloatingPointTy());
+    auto fpValue = cast<ConstantFP>(stepValue)->getValueAPF();
+    return fpValue.isNonZero() && !fpValue.isNegative();
+  }
 
-  return p;
 }
 
 Type * InductionVariable::getIVType (void) const {

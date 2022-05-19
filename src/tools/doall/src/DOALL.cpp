@@ -57,13 +57,6 @@ bool DOALL::canBeAppliedToLoop (
   }
 
   /*
-   * Check if DOALL is enabled.
-   */
-  if (!this->enabled){
-    return false;
-  }
-
-  /*
    * Fetch the loop structure.
    */
   auto loopStructure = LDI->getLoopStructure();
@@ -109,7 +102,7 @@ bool DOALL::canBeAppliedToLoop (
    * The loop must have all live-out variables to be reducable.
    */
   auto sccManager = LDI->getSCCManager();
-  if (!sccManager->areAllLiveOutValuesReducable(LDI->environment)) {
+  if (!sccManager->areAllLiveOutValuesReducable(LDI->getEnvironment())) {
     if (this->verbose != Verbosity::Disabled) {
       errs() << "DOALL:   Some live-out values are not reducable\n";
     }
@@ -228,15 +221,22 @@ bool DOALL::apply (
   /*
    * Fetch the environment of the loop.
    */
-  auto loopEnvironment = LDI->environment;
+  auto loopEnvironment = LDI->getEnvironment();
+  assert(loopEnvironment != nullptr);
+
+  /*
+   * Fetch the maximum number of cores we can use for this loop.
+   */
+  auto ltm = LDI->getLoopTransformationsManager();
+  auto maxCores = ltm->getMaximumNumberOfCores();
 
   /*
    * Print the parallelization request.
    */
   if (this->verbose != Verbosity::Disabled) {
     errs() << "DOALL: Start the parallelization\n";
-    errs() << "DOALL:   Number of threads to extract = " << LDI->getMaximumNumberOfCores() << "\n";
-    errs() << "DOALL:   Chunk size = " << LDI->DOALLChunkSize << "\n";
+    errs() << "DOALL:   Number of threads to extract = " << maxCores << "\n";
+    errs() << "DOALL:   Chunk size = " << ltm->getChunkSize() << "\n";
   }
 
   /*
@@ -244,15 +244,15 @@ bool DOALL::apply (
    */
   auto chunkerTask = new DOALLTask(this->taskSignature, *this->n.getProgram());
   this->addPredecessorAndSuccessorsBasicBlocksToTasks(LDI, { chunkerTask });
-  this->numTaskInstances = LDI->getMaximumNumberOfCores();
+  this->numTaskInstances = maxCores;
 
   /*
    * Allocate memory for all environment variables
    */
   auto preEnvRange = loopEnvironment->getEnvIndicesOfLiveInVars();
   auto postEnvRange = loopEnvironment->getEnvIndicesOfLiveOutVars();
-  std::set<int> nonReducableVars(preEnvRange.begin(), preEnvRange.end());
-  std::set<int> reducableVars(postEnvRange.begin(), postEnvRange.end());
+  std::set<uint32_t> nonReducableVars(preEnvRange.begin(), preEnvRange.end());
+  std::set<uint32_t> reducableVars(postEnvRange.begin(), postEnvRange.end());
   this->initializeEnvironmentBuilder(LDI, nonReducableVars, reducableVars);
 
   /*
@@ -267,6 +267,7 @@ bool DOALL::apply (
    * Load all loop live-in values at the entry point of the task.
    */
   auto envUser = this->envBuilder->getUser(0);
+  assert(envUser != nullptr);
   for (auto envIndex : loopEnvironment->getEnvIndicesOfLiveInVars()) {
     envUser->addLiveInIndex(envIndex);
   }
@@ -279,7 +280,7 @@ bool DOALL::apply (
    * HACK: For now, this must follow loading live-ins as this re-wiring overrides
    * the live-in mapping to use locally cloned memory instructions that are live-in to the loop
    */
-  if (LDI->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)) {
+  if (ltm->isOptimizationEnabled(LoopDependenceInfoOptimization::MEMORY_CLONING_ID)) {
     this->cloneMemoryLocationsLocallyAndRewireLoop(LDI, 0);
   }
 
@@ -365,17 +366,18 @@ void DOALL::addChunkFunctionExecutionAsideOriginalLoop (
   /*
    * Fetch the pointer to the environment.
    */
-  auto envPtr = envBuilder->getEnvArrayInt8Ptr();
+  auto envPtr = envBuilder->getEnvironmentArrayVoidPtr();
 
   /*
    * Fetch the number of cores
    */
-  auto numCores = ConstantInt::get(par.int64, LDI->getMaximumNumberOfCores());
+  auto ltm = LDI->getLoopTransformationsManager();
+  auto numCores = ConstantInt::get(par.int64, ltm->getMaximumNumberOfCores());
 
   /*
    * Fetch the chunk size.
    */
-  auto chunkSize = ConstantInt::get(par.int64, LDI->DOALLChunkSize);
+  auto chunkSize = ConstantInt::get(par.int64, ltm->getChunkSize());
 
   /*
    * Call the function that incudes the parallelized loop.
@@ -392,7 +394,7 @@ void DOALL::addChunkFunctionExecutionAsideOriginalLoop (
   /*
    * Propagate the last value of live-out variables to the code outside the parallelized loop.
    */
-  auto latestBBAfterDOALLCall = this->propagateLiveOutEnvironment(LDI, numThreadsUsed);
+  auto latestBBAfterDOALLCall = this->performReductionToAllReducableLiveOutVariables(LDI, numThreadsUsed);
 
   /*
    * Jump to the unique successor of the loop.

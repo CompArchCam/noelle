@@ -67,17 +67,18 @@ namespace llvm::noelle {
       errs() << prefix << "  Function = \"" << loopFunction->getName() << "\"\n";
       errs() << prefix << "  Loop " << LDI->getID() << " = \"" << *loopHeader->getFirstNonPHI() << "\"\n";
       errs() << prefix << "  Nesting level = " << loopStructure->getNestingLevel() << "\n";
-      errs() << prefix << "  Number of threads to extract = " << LDI->getMaximumNumberOfCores() << "\n";
+      errs() << prefix << "  Number of threads to extract = " << LDI->getLoopTransformationsManager()->getMaximumNumberOfCores() << "\n";
     }
 
     /*
      * Parallelize the loop.
      */
     auto codeModified = false;
+    auto ltm = LDI->getLoopTransformationsManager();
     ParallelizationTechnique *usedTechnique = nullptr;
     if (  true
         && par.isTransformationEnabled(DOALL_ID)
-        && LDI->isTransformationEnabled(DOALL_ID)
+        && ltm->isTransformationEnabled(DOALL_ID)
         && doall.canBeAppliedToLoop(LDI, h)
        ){
 
@@ -89,7 +90,7 @@ namespace llvm::noelle {
 
     } else if ( true
         && par.isTransformationEnabled(HELIX_ID)
-        && LDI->isTransformationEnabled(HELIX_ID)
+        && ltm->isTransformationEnabled(HELIX_ID)
         && helix.canBeAppliedToLoop(LDI, h)   
         ){
 
@@ -115,7 +116,11 @@ namespace llvm::noelle {
 
       auto DS = par.getDominators(function);
       auto l = LI.getLoopsInPreorder()[0];
-      auto newLDI = new LoopDependenceInfo(taskFunctionDG, l, *DS, SE, par.getCompilationOptionsManager()->getMaximumNumberOfCores(), par.canFloatsBeConsideredRealNumbers());
+      auto newLoops = par.getLoopStructures(function, 0);
+      auto newForest = par.organizeLoopsInTheirNestingForest(*newLoops);
+      auto newLoopNode = newForest->getInnermostLoopThatContains(l->getHeader());
+      assert(newLoopNode != nullptr);
+      auto newLDI = new LoopDependenceInfo(taskFunctionDG, newLoopNode, l, *DS, SE, par.getCompilationOptionsManager()->getMaximumNumberOfCores(), par.canFloatsBeConsideredRealNumbers());
       newLDI->copyParallelizationOptionsFrom(LDI);
 
       codeModified = helix.apply(newLDI, h);
@@ -123,7 +128,7 @@ namespace llvm::noelle {
 
     } else if ( true
         && par.isTransformationEnabled(DSWP_ID)
-        && LDI->isTransformationEnabled(DSWP_ID)
+        && ltm->isTransformationEnabled(DSWP_ID)
         && dswp.canBeAppliedToLoop(LDI, h)
         ) {
 
@@ -165,7 +170,7 @@ namespace llvm::noelle {
     if (verbose != Verbosity::Disabled) {
       errs() << prefix << "  Link the parallelize loop\n";
     }
-    auto exitIndex = ConstantInt::get(par.int64, LDI->environment->indexOfExitBlockTaken());
+    auto exitIndex = ConstantInt::get(par.int64, LDI->getEnvironment()->indexOfExitBlockTaken());
     auto loopExitBlocks = loopStructure->getLoopExitBasicBlocks();
     par.linkTransformedLoopToOriginalFunction(
         loopFunction->getParent(),
